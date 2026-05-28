@@ -1,0 +1,39 @@
+{
+  "name": "codex-task-notify",
+  "displayName": "Codex Task Notify",
+  "description": "Shows local VS Code notifications for Codex task completion events written into the workspace.",
+  "version": "0.0.1",
+  "publisher": "rmargin",
+  "engines": {
+    "vscode": "^1.121.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:codexTaskNotify.testNotification",
+    "onCommand:codexTaskNotify.installLocalCli",
+    "onCommand:codexTaskNotify.installWorkspaceCli"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexTaskNotify.testNotification",
+        "title": "Codex Task Notify: Test Notification"
+      },
+      {
+        "command": "codexTaskNotify.installLocalCli",
+        "title": "Codex Task Notify: Install Local CLI"
+      },
+      {
+        "command": "codexTaskNotify.installWorkspaceCli",
+        "title": "Codex Task Notify: Install Workspace CLI"
+      }
+    ]
+  }
+}
