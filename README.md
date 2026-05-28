@@ -20,6 +20,7 @@ Local Windows notifications for Codex task completion, including support for:
 - WSL: forward to Windows via `powershell.exe`
 - Remote Linux automatic mode: monitor Codex session files directly when the VS Code extension can see the remote filesystem
 - Remote Linux bridge mode: write a workspace event to `tmp/codex-task-notify/task.json`, then let the local VS Code extension show the notification
+- Token usage is read from real session data; cost estimation is optional and based on your own pricing settings
 
 ## Install
 
@@ -75,9 +76,83 @@ If auto-detection is wrong in your environment, set these VS Code settings:
 {
   "codexTaskNotify.sessionsRoot": "",
   "codexTaskNotify.sessionPollMs": 1500,
-  "codexTaskNotify.sessionLookbackDays": 7
+  "codexTaskNotify.sessionLookbackDays": 7,
+  "codexTaskNotify.costEstimation.enabled": false,
+  "codexTaskNotify.costEstimation.useBuiltInOpenAIPricing": false,
+  "codexTaskNotify.costEstimation.includeInNotifications": false,
+  "codexTaskNotify.costEstimation.outputCurrency": "USD",
+  "codexTaskNotify.costEstimation.exchangeRate": 1,
+  "codexTaskNotify.costEstimation.customModelPricing": {}
 }
 ```
+
+`customModelPricing` example:
+
+```json
+{
+  "codexTaskNotify.costEstimation.enabled": true,
+  "codexTaskNotify.costEstimation.useBuiltInOpenAIPricing": false,
+  "codexTaskNotify.costEstimation.includeInNotifications": false,
+  "codexTaskNotify.costEstimation.outputCurrency": "USD",
+  "codexTaskNotify.costEstimation.exchangeRate": 1,
+  "codexTaskNotify.costEstimation.customModelPricing": {
+    "gpt-5.4": {
+      "inputPerMillionUsd": 2.5,
+      "cachedInputPerMillionUsd": 0.25,
+      "outputPerMillionUsd": 15
+    },
+    "gpt-5.4-mini": {
+      "inputPerMillionUsd": 0.75,
+      "cachedInputPerMillionUsd": 0.075,
+      "outputPerMillionUsd": 4.5
+    },
+    "gpt-5.5": {
+      "inputPerMillionUsd": 5,
+      "cachedInputPerMillionUsd": 0.5,
+      "outputPerMillionUsd": 30
+    }
+  }
+}
+```
+
+Recommended minimal setup if your Codex session mostly uses `gpt-5.4`:
+
+```json
+{
+  "codexTaskNotify.costEstimation.enabled": true,
+  "codexTaskNotify.costEstimation.customModelPricing": {
+    "gpt-5.4": {
+      "inputPerMillionUsd": 2.5,
+      "cachedInputPerMillionUsd": 0.25,
+      "outputPerMillionUsd": 15
+    }
+  }
+}
+```
+
+Example with RMB display:
+
+```json
+{
+  "codexTaskNotify.costEstimation.enabled": true,
+  "codexTaskNotify.costEstimation.outputCurrency": "CNY",
+  "codexTaskNotify.costEstimation.exchangeRate": 7.2,
+  "codexTaskNotify.costEstimation.customModelPricing": {
+    "gpt-5.4": {
+      "inputPerMillionUsd": 2.5,
+      "cachedInputPerMillionUsd": 0.25,
+      "outputPerMillionUsd": 15
+    }
+  }
+}
+```
+
+Notes:
+
+- `inputPerMillionUsd`: uncached input token price
+- `cachedInputPerMillionUsd`: cached input token price
+- `outputPerMillionUsd`: output token price
+- model names must match the session data, for example `gpt-5.4`
 
 Set `codexTaskNotify.sessionsRoot` explicitly when needed, for example:
 

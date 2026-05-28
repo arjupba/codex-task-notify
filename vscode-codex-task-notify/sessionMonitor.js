@@ -1,10 +1,11 @@
 const os = require("os");
 const path = require("path");
 const vscode = require("vscode");
+const { estimateCompletionCost, getCostSettings } = require("./pricing");
 
 const DEFAULT_SESSION_POLL_MS = 1500;
 const DEFAULT_SESSION_LOOKBACK_DAYS = 7;
-const MAX_RECENT_COMPLETIONS = 50;
+const MAX_RECENT_COMPLETIONS = 20;
 const DEFAULT_SESSION_SEGMENTS = [".codex", "sessions"];
 const REMOTE_HOME_CANDIDATE_ROOTS = ["/home", "/Users"];
 
@@ -88,6 +89,17 @@ class CodexSessionMonitor {
 
   getRecentCompletions() {
     return this.recentCompletions.map((completion) => copyRecentCompletion(completion));
+  }
+
+  getSnapshotState() {
+    return {
+      recentCompletions: this.getRecentCompletions(),
+      latestCompletion: this.recentCompletions[0] ? copyRecentCompletion(this.recentCompletions[0]) : undefined
+    };
+  }
+
+  restoreRecentCompletions(items) {
+    this.recentCompletions = normalizeRecentCompletionList(items, MAX_RECENT_COMPLETIONS);
   }
 
   async poll() {
@@ -229,6 +241,9 @@ class CodexSessionMonitor {
       if (typeof parsed.payload?.cwd === "string") {
         turn.cwd = parsed.payload.cwd;
       }
+      if (typeof parsed.payload?.model === "string") {
+        turn.model = parsed.payload.model;
+      }
       return;
     }
 
@@ -316,11 +331,13 @@ class CodexSessionMonitor {
     const title = buildNotificationTitle(tracker, turn, level);
     const tokenUsage = turn?.tokenUsage || tracker.latestTokenUsage;
     const rateLimits = turn?.rateLimits || tracker.latestRateLimits;
+    const model = turn?.model;
     const completedAtIso =
       normalizeFlexibleTimestamp(payload.completed_at) ||
       eventTimestampIso ||
       new Date().toISOString();
-    const message = buildNotificationMessage(payload, turn, tokenUsage);
+    const costEstimate = estimateCompletionCost({ model, tokenUsage }, getCostSettings());
+    const message = buildNotificationMessage(payload, turn, tokenUsage, costEstimate);
     const projectName = projectNameFromCwd(turn?.cwd || tracker.cwd);
     const completion = createRecentCompletion({
       id: eventId,
@@ -337,8 +354,10 @@ class CodexSessionMonitor {
       userMessage: turn?.userMessage,
       lastAgentMessage: turn?.lastAgentMessage || payload.last_agent_message,
       errorMessage: turn?.errorMessage,
+      model,
       tokenUsage,
-      rateLimits
+      rateLimits,
+      costEstimate
     });
     pushBounded(this.recentCompletions, completion, MAX_RECENT_COMPLETIONS);
     this.stats.notificationCount += 1;
@@ -359,8 +378,10 @@ class CodexSessionMonitor {
       projectName,
       cwd: turn?.cwd || tracker.cwd,
       sessionFile: tracker.uri.toString(),
+      model,
       tokenUsage: copyStructuredValue(tokenUsage),
-      rateLimits: copyStructuredValue(rateLimits)
+      rateLimits: copyStructuredValue(rateLimits),
+      costEstimate: copyStructuredValue(costEstimate)
     });
   }
 
@@ -429,6 +450,7 @@ function getOrCreateTurn(tracker, turnId) {
     userMessage: undefined,
     lastAgentMessage: undefined,
     errorMessage: undefined,
+    model: undefined,
     tokenUsage: undefined,
     rateLimits: undefined
   };
@@ -578,13 +600,36 @@ function createRecentCompletion(fields) {
     userMessage: fields.userMessage,
     lastAgentMessage: fields.lastAgentMessage,
     errorMessage: fields.errorMessage,
+    model: fields.model,
     tokenUsage: copyStructuredValue(fields.tokenUsage),
-    rateLimits: copyStructuredValue(fields.rateLimits)
+    rateLimits: copyStructuredValue(fields.rateLimits),
+    costEstimate: copyStructuredValue(fields.costEstimate)
   };
 }
 
 function copyRecentCompletion(completion) {
   return createRecentCompletion(completion);
+}
+
+function normalizeRecentCompletionList(items, maxLength) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return undefined;
+      }
+
+      if (typeof item.id !== "string" || !item.id.trim()) {
+        return undefined;
+      }
+
+      return createRecentCompletion(item);
+    })
+    .filter(Boolean)
+    .slice(0, Math.max(0, maxLength));
 }
 
 function pushBounded(items, value, maxLength) {
@@ -639,7 +684,7 @@ function buildNotificationTitle(tracker, turn, level) {
   return projectName ? `${baseTitle} (${projectName})` : baseTitle;
 }
 
-function buildNotificationMessage(payload, turn, tokenUsage) {
+function buildNotificationMessage(payload, turn, tokenUsage, costEstimate) {
   const promptText =
     turn?.userMessage ||
     payload.last_agent_message ||
@@ -648,6 +693,15 @@ function buildNotificationMessage(payload, turn, tokenUsage) {
     "Task completed";
   const summary = previewText(promptText, 140);
   const tokenSummary = formatTokenUsage(tokenUsage);
+  const includeCostInNotifications = getCostSettings().includeInNotifications;
+  const costSummary =
+    includeCostInNotifications && costEstimate?.available
+      ? formatCostEstimateBrief(costEstimate)
+      : "";
+  if (costSummary) {
+    return `${costSummary} | ${summary}`;
+  }
+
   return tokenSummary ? `${summary} [${tokenSummary}]` : summary;
 }
 
@@ -697,6 +751,26 @@ function formatCompactNumber(value) {
   }
 
   return String(value);
+}
+
+function formatCostEstimateBrief(costEstimate) {
+  if (!costEstimate || !costEstimate.available) {
+    return "";
+  }
+
+  if (costEstimate.currency === "USD") {
+    return `$${formatTinyDecimal(costEstimate.usdTotal)}`;
+  }
+
+  return `${costEstimate.currency} ${formatTinyDecimal(costEstimate.convertedTotal)}`;
+}
+
+function formatTinyDecimal(value) {
+  if (!Number.isFinite(value)) {
+    return "0.000";
+  }
+
+  return (Math.round((value + Number.EPSILON) * 1000) / 1000).toFixed(3);
 }
 
 function projectNameFromCwd(cwd) {

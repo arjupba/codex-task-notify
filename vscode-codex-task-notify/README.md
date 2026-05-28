@@ -35,7 +35,9 @@ Local task-completion notifications for Codex across Windows, WSL, and Remote SS
 
 - `Codex Task Notify: Test Notification`
 - `Codex Task Notify: Show Diagnostics`
+- `Codex Task Notify: Debug Snapshot`
 - `Codex Task Notify: Show Recent History`
+- `Codex Task Notify: Show Recent Events`
 - `Codex Task Notify: Install Local CLI`
 - `Codex Task Notify: Install Workspace CLI`
 
@@ -43,7 +45,9 @@ Local task-completion notifications for Codex across Windows, WSL, and Remote SS
 
 - `Codex Task Notify: Test Notification`
 - `Codex Task Notify: Show Diagnostics`
+- `Codex Task Notify: Debug Snapshot`
 - `Codex Task Notify: Show Recent History`
+- `Codex Task Notify: Show Recent Events`
 - `Codex Task Notify: Install Local CLI`
 - `Codex Task Notify: Install Workspace CLI`
 
@@ -78,7 +82,9 @@ Codex session files directly from `.codex/sessions`.
 Useful built-in commands:
 
 - `Show Diagnostics`: inspect the resolved sessions path, poll status, tracked files, latest completion, and latest `rate_limits` payload
+- `Debug Snapshot`: dump a JSON snapshot of diagnostics, settings, and recent state
 - `Show Recent History`: inspect recently completed Codex turns and recent bridge notifications in the output panel
+- `Show Recent Events`: inspect the newest observed event entries in chronological order
 
 Useful settings:
 
@@ -105,6 +111,97 @@ bash / WSL:
 
 ```bash
 bash ./codex-notify.sh -Title "Codex complete" -Message "Task completed"
+```
+
+## Android Push With ntfy
+
+`ntfy` is the recommended Android push option for this extension because it can
+start on the free hosted tier and only needs a simple HTTP request.
+
+How to use it:
+
+1. Install the `ntfy` Android app.
+2. Create or subscribe to a topic, for example `codex-10941-demo`.
+3. Put the publish URL into VS Code settings.
+4. Turn on ntfy delivery in this extension.
+
+Example settings:
+
+```json
+{
+  "codexTaskNotify.notificationChannels.ntfy.enabled": true,
+  "codexTaskNotify.notificationChannels.ntfy.topicUrl": "https://ntfy.sh/codex-10941-demo",
+  "codexTaskNotify.notificationChannels.ntfy.priority": 3,
+  "codexTaskNotify.notificationChannels.ntfy.tags": "computer"
+}
+```
+
+If your ntfy topic is private or protected, also set:
+
+```json
+{
+  "codexTaskNotify.notificationChannels.ntfy.accessToken": "YOUR_NTFY_ACCESS_TOKEN"
+}
+```
+
+Hosted `ntfy.sh` free tier note:
+
+- Official hosted free tier currently allows `250 messages/day`, which is
+  typically enough for Codex task completion notifications.
+
+## Sound Notification
+
+If you want an extra local cue on Windows, you can enable a system sound:
+
+```json
+{
+  "codexTaskNotify.notificationChannels.sound.enabled": true,
+  "codexTaskNotify.notificationChannels.sound.windowsSound": "Notification.Default"
+}
+```
+
+Supported sound values:
+
+- `Notification.Default`
+- `SystemAsterisk`
+- `SystemExclamation`
+- `SystemHand`
+
+If you do not want sound, leave it disabled.
+
+## Generic Webhook
+
+If you want to connect your own push bridge or automation service, enable the
+generic webhook channel:
+
+```json
+{
+  "codexTaskNotify.notificationChannels.webhook.enabled": true,
+  "codexTaskNotify.notificationChannels.webhook.url": "https://example.com/codex-notify",
+  "codexTaskNotify.notificationChannels.webhook.headers": {
+    "Authorization": "Bearer YOUR_TOKEN"
+  }
+}
+```
+
+Webhook payload shape:
+
+```json
+{
+  "title": "Codex task complete",
+  "message": "CNY 0.123 | fixed notification routing",
+  "level": "info",
+  "timestamp": "2026-05-28T10:00:00.000Z",
+  "source": "codex-session",
+  "sessionId": "session-id",
+  "turnId": "turn-id",
+  "projectName": "codex-task-notify",
+  "cwd": "C:\\Users\\10941\\Documents\\Project\\codex-task-notify",
+  "sessionFile": "file:///...jsonl",
+  "model": "gpt-5.4",
+  "tokenUsage": {},
+  "costEstimate": {}
+}
 ```
 
 ## Repository

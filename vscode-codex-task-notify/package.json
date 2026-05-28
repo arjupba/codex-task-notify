@@ -39,7 +39,10 @@
   "activationEvents": [
     "onStartupFinished",
     "onCommand:codexTaskNotify.showDiagnostics",
+    "onCommand:codexTaskNotify.showDebugSnapshot",
     "onCommand:codexTaskNotify.showRecentHistory",
+    "onCommand:codexTaskNotify.showRecentEvents",
+    "onCommand:codexTaskNotify.showRecentCosts",
     "onCommand:codexTaskNotify.testNotification",
     "onCommand:codexTaskNotify.installLocalCli",
     "onCommand:codexTaskNotify.installWorkspaceCli"
@@ -65,6 +68,107 @@
           "minimum": 1,
           "maximum": 7,
           "description": "How many recent session-date directories to scan under .codex/sessions."
+        },
+        "codexTaskNotify.costEstimation.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable cost estimation based on per-model token pricing."
+        },
+        "codexTaskNotify.costEstimation.useBuiltInOpenAIPricing": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use the bundled OpenAI pricing table as a fallback price source."
+        },
+        "codexTaskNotify.costEstimation.includeInNotifications": {
+          "type": "boolean",
+          "default": false,
+          "description": "Append estimated cost to completion notifications."
+        },
+        "codexTaskNotify.costEstimation.outputCurrency": {
+          "type": "string",
+          "default": "USD",
+          "description": "Currency label to use for displayed cost totals."
+        },
+        "codexTaskNotify.costEstimation.exchangeRate": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "description": "Exchange rate from USD to the display currency."
+        },
+        "codexTaskNotify.costEstimation.customModelPricing": {
+          "type": "object",
+          "default": {},
+          "description": "Per-model pricing overrides in USD per 1M tokens."
+        },
+        "codexTaskNotify.notificationChannels.webhook.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable generic webhook delivery for each notification."
+        },
+        "codexTaskNotify.notificationChannels.webhook.url": {
+          "type": "string",
+          "default": "",
+          "description": "HTTP or HTTPS webhook URL that receives a JSON POST payload."
+        },
+        "codexTaskNotify.notificationChannels.webhook.timeoutMs": {
+          "type": "number",
+          "default": 10000,
+          "minimum": 1000,
+          "description": "Timeout in milliseconds for generic webhook requests."
+        },
+        "codexTaskNotify.notificationChannels.webhook.headers": {
+          "type": "object",
+          "default": {},
+          "description": "Optional extra HTTP headers for webhook requests."
+        },
+        "codexTaskNotify.notificationChannels.sound.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Play a Windows notification sound when a Codex task completes."
+        },
+        "codexTaskNotify.notificationChannels.sound.windowsSound": {
+          "type": "string",
+          "default": "Notification.Default",
+          "enum": [
+            "Notification.Default",
+            "SystemAsterisk",
+            "SystemExclamation",
+            "SystemHand"
+          ],
+          "description": "Windows system sound to play when sound notifications are enabled."
+        },
+        "codexTaskNotify.notificationChannels.ntfy.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable ntfy mobile push delivery."
+        },
+        "codexTaskNotify.notificationChannels.ntfy.topicUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Full ntfy topic publish URL, for example https://ntfy.sh/your-topic-name."
+        },
+        "codexTaskNotify.notificationChannels.ntfy.accessToken": {
+          "type": "string",
+          "default": "",
+          "description": "Optional ntfy access token for private or protected topics."
+        },
+        "codexTaskNotify.notificationChannels.ntfy.priority": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 5,
+          "description": "ntfy priority from 1 (low) to 5 (high)."
+        },
+        "codexTaskNotify.notificationChannels.ntfy.tags": {
+          "type": "string",
+          "default": "computer",
+          "description": "Comma-separated ntfy tags, such as computer,robot."
+        },
+        "codexTaskNotify.notificationChannels.ntfy.timeoutMs": {
+          "type": "number",
+          "default": 10000,
+          "minimum": 1000,
+          "description": "Timeout in milliseconds for ntfy requests."
         }
       }
     },
@@ -78,8 +182,20 @@
         "title": "Codex Task Notify: Show Diagnostics"
       },
       {
+        "command": "codexTaskNotify.showDebugSnapshot",
+        "title": "Codex Task Notify: Debug Snapshot"
+      },
+      {
         "command": "codexTaskNotify.showRecentHistory",
         "title": "Codex Task Notify: Show Recent History"
+      },
+      {
+        "command": "codexTaskNotify.showRecentEvents",
+        "title": "Codex Task Notify: Show Recent Events"
+      },
+      {
+        "command": "codexTaskNotify.showRecentCosts",
+        "title": "Codex Task Notify: Show Recent Costs"
       },
       {
         "command": "codexTaskNotify.installLocalCli",

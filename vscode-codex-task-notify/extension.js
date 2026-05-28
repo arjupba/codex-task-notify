@@ -4,21 +4,29 @@ const os = require("os");
 const path = require("path");
 const vscode = require("vscode");
 const { CodexSessionMonitor } = require("./sessionMonitor");
+const { deliverExternalNotifications, getNotificationChannelSettings } = require("./notificationChannels");
+const { estimateCompletionCost, formatCostEstimate, formatPricingEntry, getBuiltInPricingReference, getCostSettings } = require("./pricing");
 
 const WATCH_GLOB = "tmp/codex-task-notify/*.json";
 const CLI_SOURCE_RELATIVE_DIR = path.join("resources", "notify");
 const LOCAL_INSTALL_DIR = path.join(".codex-task-notify", "bin");
 const WORKSPACE_INSTALL_SEGMENTS = [".vscode", "codex-task-notify", "bin"];
-const MAX_RECENT_EVENTS = 50;
+const MAX_RECENT_EVENTS = 20;
+const RECENT_COMPLETIONS_STATE_KEY = "recentCompletions";
+const RECENT_NOTIFICATIONS_STATE_KEY = "recentNotifications";
 const seenEvents = new Map();
 const recentNotifications = [];
 
 function activate(context) {
   const watcherDisposables = [];
   const sessionMonitor = new CodexSessionMonitor(context, async (payload) => {
-    recordRecentNotification(payload);
     await showNotification(context, payload);
+    recordRecentNotification(payload);
+    await persistRecentNotifications(context);
+    await persistRecentCompletions(context, sessionMonitor);
   });
+
+  restorePersistedState(context, sessionMonitor);
 
   const rebuildWatchers = () => {
     while (watcherDisposables.length) {
@@ -62,8 +70,9 @@ function activate(context) {
         level: "info",
         id: `manual-${Date.now()}`
       };
-      recordRecentNotification(payload);
       await showNotification(context, payload);
+      recordRecentNotification(payload);
+      await persistRecentNotifications(context);
     })
   );
 
@@ -76,6 +85,24 @@ function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand("codexTaskNotify.showRecentHistory", async () => {
       await showRecentHistory(sessionMonitor);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("codexTaskNotify.showRecentEvents", async () => {
+      await showRecentEvents(sessionMonitor);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("codexTaskNotify.showRecentCosts", async () => {
+      await showRecentCosts(sessionMonitor);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("codexTaskNotify.showDebugSnapshot", async () => {
+      await showDebugSnapshot(sessionMonitor);
     })
   );
 
@@ -120,14 +147,16 @@ async function handleEventFile(context, uri) {
 
     seenEvents.set(uri.toString(), eventId);
 
-    recordRecentNotification({
+    const enrichedPayload = {
       ...payload,
       id: eventId,
       source: payload.source || "workspace-event",
       eventFile: uri.toString(),
       timestamp: normalizeTimestamp(payload.createdAt) || new Date().toISOString()
-    });
-    await showNotification(context, payload);
+    };
+    await showNotification(context, enrichedPayload);
+    recordRecentNotification(enrichedPayload);
+    await persistRecentNotifications(context);
   } catch (error) {
     console.error("[codex-task-notify] Failed to process event file", uri.toString(), error);
   }
@@ -144,6 +173,18 @@ async function showNotification(context, payload) {
       : "Task completed";
   const text = `${title}: ${message}`;
   const level = String(payload.level || "info").toLowerCase();
+
+  try {
+    const delivery = await deliverExternalNotifications(context, {
+      ...payload,
+      title,
+      message,
+      level
+    });
+    payload.delivery = delivery;
+  } catch (error) {
+    console.error("[codex-task-notify] Failed to deliver external notifications", error);
+  }
 
   if (await tryShowLocalWindowsNotification(context, { title, message, level })) {
     return;
@@ -241,18 +282,19 @@ async function showDiagnostics(sessionMonitor) {
   output.appendLine(`recentNotificationCount: ${recentNotifications.length}`);
   output.appendLine(`notificationCount: ${diagnostics.notificationCount}`);
   output.appendLine(`lastDiscoveredFileCount: ${diagnostics.lastDiscoveredFileCount}`);
-  output.appendLine(`lastPollStartedAt: ${diagnostics.lastPollStartedAtIso || "(none)"}`);
-  output.appendLine(`lastPollCompletedAt: ${diagnostics.lastPollCompletedAtIso || "(none)"}`);
+  output.appendLine(`lastPollStartedAt: ${formatDisplayTimestamp(diagnostics.lastPollStartedAtIso)}`);
+  output.appendLine(`lastPollCompletedAt: ${formatDisplayTimestamp(diagnostics.lastPollCompletedAtIso)}`);
   output.appendLine(`lastPollDurationMs: ${diagnostics.lastPollDurationMs}`);
-  output.appendLine(`lastNotificationAt: ${diagnostics.lastNotificationAtIso || "(none)"}`);
+  output.appendLine(`lastNotificationAt: ${formatDisplayTimestamp(diagnostics.lastNotificationAtIso)}`);
   output.appendLine(`lastNotificationTitle: ${diagnostics.lastNotificationTitle || "(none)"}`);
-  output.appendLine(`lastTaskCompleteAt: ${diagnostics.lastTaskCompleteAtIso || "(none)"}`);
+  output.appendLine(`lastTaskCompleteAt: ${formatDisplayTimestamp(diagnostics.lastTaskCompleteAtIso)}`);
   output.appendLine(`lastTaskCompleteSessionId: ${diagnostics.lastTaskCompleteSessionId || "(none)"}`);
   output.appendLine(`lastTaskCompleteTurnId: ${diagnostics.lastTaskCompleteTurnId || "(none)"}`);
   output.appendLine(`restartCount: ${diagnostics.restartCount}`);
-  output.appendLine(`lastRestartAt: ${diagnostics.lastRestartAtIso || "(none)"}`);
+  output.appendLine(`lastRestartAt: ${formatDisplayTimestamp(diagnostics.lastRestartAtIso)}`);
   output.appendLine(`missingRootWarningShown: ${diagnostics.missingRootWarningShown}`);
   output.appendLine(`lastError: ${diagnostics.lastError || "(none)"}`);
+  appendCostDiagnostics(output, diagnostics.latestCompletion);
 
   output.appendLine("");
   output.appendLine("Latest completion:");
@@ -265,7 +307,7 @@ async function showDiagnostics(sessionMonitor) {
   output.appendLine("");
   output.appendLine("Last rate_limits:");
   if (diagnostics.lastRateLimits) {
-    output.appendLine(`  at: ${diagnostics.lastRateLimitsAtIso || "(unknown)"}`);
+    output.appendLine(`  at: ${formatDisplayTimestamp(diagnostics.lastRateLimitsAtIso, "(unknown)")}`);
     output.appendLine(`  data: ${JSON.stringify(diagnostics.lastRateLimits)}`);
   } else {
     output.appendLine("  (none or all-null)");
@@ -273,17 +315,40 @@ async function showDiagnostics(sessionMonitor) {
 
   output.show(true);
   await vscode.window.showInformationMessage(
-    `Codex Task Notify: tracked=${diagnostics.trackedFileCount} files, recent=${diagnostics.recentCompletionCount}, lastNotify=${diagnostics.lastNotificationAtIso || "none"}`
+    `Codex Task Notify: tracked=${diagnostics.trackedFileCount} files, recent=${diagnostics.recentCompletionCount}, lastNotify=${formatDisplayTimestamp(diagnostics.lastNotificationAtIso, "none")}`
   );
 }
 
+async function showDebugSnapshot(sessionMonitor) {
+  const diagnostics = sessionMonitor.getDiagnostics();
+  const snapshotState = sessionMonitor.getSnapshotState();
+  const output = getOutputChannel();
+  output.clear();
+  output.appendLine("===== Codex Task Notify Debug Snapshot =====");
+
+  const snapshot = {
+    capturedAt: new Date().toISOString(),
+    diagnostics,
+    costSettings: getCostSettings(),
+    notificationSettings: getNotificationChannelSettings(),
+    recentCompletions: snapshotState.recentCompletions,
+    recentNotifications: JSON.parse(JSON.stringify(recentNotifications)),
+    latestCompletion: snapshotState.latestCompletion || null
+  };
+
+  output.appendLine(JSON.stringify(snapshot, null, 2));
+  output.show(true);
+  await vscode.window.showInformationMessage("Codex Task Notify: debug snapshot captured.");
+}
+
 async function showRecentHistory(sessionMonitor) {
-  const completions = sessionMonitor.getRecentCompletions();
+  const completions = getChronologicalEntries(sessionMonitor.getRecentCompletions());
+  const notifications = getChronologicalEntries(recentNotifications);
   const output = getOutputChannel();
   output.clear();
   output.appendLine("===== Codex Task Notify Recent History =====");
 
-  if (!completions.length && !recentNotifications.length) {
+  if (!completions.length && !notifications.length) {
     output.appendLine("(no completed Codex turns or bridge notifications observed yet)");
     output.show(true);
     await vscode.window.showInformationMessage("Codex Task Notify: no completed Codex turns or bridge notifications observed yet.");
@@ -298,9 +363,9 @@ async function showRecentHistory(sessionMonitor) {
     }
   }
 
-  if (recentNotifications.length) {
+  if (notifications.length) {
     output.appendLine("Recent notifications:");
-    for (const notification of recentNotifications) {
+    for (const notification of notifications) {
       appendHistoryEntry(output, notification);
       output.appendLine("");
     }
@@ -308,8 +373,36 @@ async function showRecentHistory(sessionMonitor) {
 
   output.show(true);
   await vscode.window.showInformationMessage(
-    `Codex Task Notify: showed ${completions.length} completed turns and ${recentNotifications.length} recent notifications.`
+    `Codex Task Notify: showed ${completions.length} completed turns and ${notifications.length} recent notifications.`
   );
+}
+
+async function showRecentEvents(sessionMonitor) {
+  const output = getOutputChannel();
+  output.clear();
+  output.appendLine("===== Codex Task Notify Recent Events =====");
+
+  const diagnostics = sessionMonitor.getDiagnostics();
+  const snapshotState = sessionMonitor.getSnapshotState();
+  const events = buildRecentEventList(diagnostics, snapshotState.recentCompletions, recentNotifications);
+
+  if (!events.length) {
+    output.appendLine("(no recent events observed yet)");
+    output.show(true);
+    await vscode.window.showInformationMessage("Codex Task Notify: no recent events observed yet.");
+    return;
+  }
+
+  for (const event of events) {
+    output.appendLine(`- ${event.at}`);
+    output.appendLine(`  type: ${event.type}`);
+    output.appendLine(`  summary: ${event.summary}`);
+    output.appendLine(`  data: ${JSON.stringify(event.data)}`);
+    output.appendLine("");
+  }
+
+  output.show(true);
+  await vscode.window.showInformationMessage(`Codex Task Notify: showed ${events.length} recent events.`);
 }
 
 function recordRecentNotification(payload) {
@@ -318,6 +411,47 @@ function recordRecentNotification(payload) {
   if (recentNotifications.length > MAX_RECENT_EVENTS) {
     recentNotifications.length = MAX_RECENT_EVENTS;
   }
+}
+
+function restorePersistedState(context, sessionMonitor) {
+  const savedCompletions = context.workspaceState.get(RECENT_COMPLETIONS_STATE_KEY, []);
+  const savedNotifications = context.workspaceState.get(RECENT_NOTIFICATIONS_STATE_KEY, []);
+
+  sessionMonitor.restoreRecentCompletions(savedCompletions);
+
+  recentNotifications.length = 0;
+  recentNotifications.push(...normalizeNotificationRecordList(savedNotifications, MAX_RECENT_EVENTS));
+}
+
+async function persistRecentNotifications(context) {
+  await context.workspaceState.update(
+    RECENT_NOTIFICATIONS_STATE_KEY,
+    JSON.parse(JSON.stringify(recentNotifications.slice(0, MAX_RECENT_EVENTS)))
+  );
+}
+
+async function persistRecentCompletions(context, sessionMonitor) {
+  await context.workspaceState.update(
+    RECENT_COMPLETIONS_STATE_KEY,
+    sessionMonitor.getRecentCompletions().slice(0, MAX_RECENT_EVENTS)
+  );
+}
+
+function normalizeNotificationRecordList(items, maxLength) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return undefined;
+      }
+
+      return normalizeNotificationRecord(item);
+    })
+    .filter(Boolean)
+    .slice(0, Math.max(0, maxLength));
 }
 
 function normalizeNotificationRecord(payload) {
@@ -339,12 +473,14 @@ function normalizeNotificationRecord(payload) {
     projectName: typeof payload.projectName === "string" ? payload.projectName : "",
     sessionFile: typeof payload.sessionFile === "string" ? payload.sessionFile : "",
     tokenUsage: payload.tokenUsage && typeof payload.tokenUsage === "object" ? JSON.parse(JSON.stringify(payload.tokenUsage)) : undefined,
+    costEstimate: payload.costEstimate && typeof payload.costEstimate === "object" ? JSON.parse(JSON.stringify(payload.costEstimate)) : undefined,
+    delivery: normalizeDeliveryList(payload.delivery),
     eventFile: typeof payload.eventFile === "string" ? payload.eventFile : ""
   };
 }
 
 function appendHistoryEntry(output, completion) {
-  output.appendLine(`- ${completion.completedAtIso || completion.timestamp || "(unknown time)"} | ${completion.title}`);
+  output.appendLine(`- ${formatDisplayTimestamp(completion.completedAtIso || completion.timestamp, "(unknown time)")} | ${completion.title}`);
   output.appendLine(`  source: ${completion.source || "unknown"} | level: ${completion.level || "info"}`);
 
   if (completion.projectName) {
@@ -365,6 +501,24 @@ function appendHistoryEntry(output, completion) {
   const tokenSummary = formatTokenUsageSummary(completion.tokenUsage);
   if (tokenSummary) {
     output.appendLine(`  tokens: ${tokenSummary}`);
+  }
+
+  if (completion.model) {
+    output.appendLine(`  model: ${completion.model}`);
+  }
+
+  const costSummary = formatCostSummary(completion.costEstimate);
+  if (costSummary) {
+    output.appendLine(`  cost: ${costSummary}`);
+  }
+
+  const deliverySummary = formatDeliverySummary(completion.delivery);
+  if (deliverySummary) {
+    output.appendLine(`  delivery: ${deliverySummary}`);
+    const deliveryFailure = formatDeliveryFailureDetail(completion.delivery);
+    if (deliveryFailure) {
+      output.appendLine(`  deliveryDetail: ${deliveryFailure}`);
+    }
   }
 
   if (completion.errorMessage) {
@@ -396,6 +550,215 @@ function formatTokenUsageSummary(tokenUsage) {
   return parts.join(", ");
 }
 
+function appendCostDiagnostics(output, completion) {
+  const settings = getCostSettings();
+  const notificationSettings = getNotificationChannelSettings();
+  output.appendLine("");
+  output.appendLine("Cost estimation:");
+  output.appendLine(`  enabled: ${settings.enabled}`);
+  output.appendLine(`  currency: ${settings.outputCurrency}`);
+  output.appendLine(`  exchangeRate: ${settings.exchangeRate}`);
+  output.appendLine(`  builtInOpenAI: ${settings.useBuiltInOpenAIPricing}`);
+  output.appendLine(`  includeInNotifications: ${settings.includeInNotifications}`);
+  output.appendLine(`  customModels: ${Object.keys(settings.customModelPricing).length}`);
+
+  const builtInReference = getBuiltInPricingReference();
+  output.appendLine(`  builtInReferenceVerifiedAt: ${builtInReference.verifiedAt}`);
+  output.appendLine(`  builtInReferenceSources: ${builtInReference.sourceUrls.join(", ")}`);
+
+  if (completion?.costEstimate?.available) {
+    output.appendLine(`  latestCost: ${formatCostSummary(completion.costEstimate)}`);
+  } else {
+    const reason = completion?.costEstimate?.reason || "missing-or-disabled";
+    output.appendLine(`  latestCost: (unavailable: ${reason})`);
+  }
+
+  output.appendLine("");
+  output.appendLine("External notifications:");
+  output.appendLine(`  webhookEnabled: ${notificationSettings.webhook.enabled}`);
+  output.appendLine(`  webhookUrl: ${notificationSettings.webhook.url || "(none)"}`);
+  output.appendLine(`  soundEnabled: ${notificationSettings.sound.enabled}`);
+  output.appendLine(`  sound: ${notificationSettings.sound.windowsSound}`);
+  output.appendLine(`  ntfyEnabled: ${notificationSettings.ntfy.enabled}`);
+  output.appendLine(`  ntfyTopicUrl: ${notificationSettings.ntfy.topicUrl || "(none)"}`);
+  output.appendLine(`  ntfyPriority: ${notificationSettings.ntfy.priority}`);
+  output.appendLine(`  ntfyTags: ${notificationSettings.ntfy.tags || "(none)"}`);
+
+  const deliverySummary = formatDeliverySummary(completion?.delivery);
+  output.appendLine(`  latestDelivery: ${deliverySummary || "(none)"}`);
+}
+
+async function showRecentCosts(sessionMonitor) {
+  const completions = getChronologicalEntries(sessionMonitor.getRecentCompletions());
+  const output = getOutputChannel();
+  output.clear();
+  output.appendLine("===== Codex Task Notify Recent Costs =====");
+
+  const costed = completions
+    .map((completion) => ({
+      completion,
+      costEstimate: completion.costEstimate || estimateCompletionCost(completion, getCostSettings())
+    }))
+    .filter((entry) => entry.costEstimate?.available);
+
+  if (!costed.length) {
+    output.appendLine("(no cost estimates available yet)");
+    output.show(true);
+    await vscode.window.showInformationMessage("Codex Task Notify: no cost estimates available yet.");
+    return;
+  }
+
+  let totalUsd = 0;
+  let totalConverted = 0;
+  for (const entry of costed) {
+    totalUsd += entry.costEstimate.usdTotal || 0;
+    totalConverted += entry.costEstimate.convertedTotal || 0;
+    output.appendLine(`- ${formatDisplayTimestamp(entry.completion.completedAtIso || entry.completion.timestamp, "(unknown time)")}`);
+    output.appendLine(`  model: ${entry.completion.model || "(unknown)"}`);
+    output.appendLine(`  cost: ${formatCostSummary(entry.costEstimate)}`);
+    output.appendLine(`  tokens: ${formatTokenUsageSummary(entry.completion.tokenUsage) || "(none)"}`);
+    output.appendLine("");
+  }
+
+  output.appendLine(`Total USD: $${formatTinyDecimal(totalUsd)}`);
+  if (getCostSettings().outputCurrency !== "USD") {
+    output.appendLine(`Total ${getCostSettings().outputCurrency}: ${getCostSettings().outputCurrency} ${formatTinyDecimal(totalConverted)}`);
+  }
+
+  output.show(true);
+  await vscode.window.showInformationMessage(`Codex Task Notify: showed ${costed.length} costed completions.`);
+}
+
+function formatCostSummary(costEstimate) {
+  if (!costEstimate || !costEstimate.available) {
+    return "";
+  }
+
+  return formatCostEstimate(costEstimate, { includeUsd: true, includeSource: false });
+}
+
+function formatDeliverySummary(delivery) {
+  if (!Array.isArray(delivery) || !delivery.length) {
+    return "";
+  }
+
+  return delivery
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return "";
+      }
+
+      const channel = typeof entry.channel === "string" ? entry.channel : "unknown";
+      const status = typeof entry.status === "string" ? entry.status : "unknown";
+      if (status === "delivered" && Number.isFinite(entry.statusCode)) {
+        return `${channel}=ok(${entry.statusCode})`;
+      }
+      if (status === "failed") {
+        return `${channel}=failed(${entry.error || "error"})`;
+      }
+      if (status === "skipped") {
+        return `${channel}=skipped(${entry.reason || "disabled"})`;
+      }
+      return `${channel}=${status}`;
+    })
+    .filter(Boolean)
+    .join(", ");
+}
+
+function formatDeliveryFailureDetail(delivery) {
+  if (!Array.isArray(delivery) || !delivery.length) {
+    return "";
+  }
+
+  const failures = delivery.filter((entry) => entry && entry.delivered === false && entry.status !== "skipped");
+  if (!failures.length) {
+    return "";
+  }
+
+  return failures
+    .map((entry) => {
+      const channel = typeof entry.channel === "string" ? entry.channel : "unknown";
+      const reason = entry.reason || entry.error || entry.detail || "failed";
+      return `${channel}:${reason}`;
+    })
+    .join(" | ");
+}
+
+function normalizeDeliveryList(delivery) {
+  if (!Array.isArray(delivery)) {
+    return [];
+  }
+
+  return delivery
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return undefined;
+      }
+
+      return {
+        channel: typeof entry.channel === "string" ? entry.channel : "unknown",
+        attempted: Boolean(entry.attempted),
+        delivered: Boolean(entry.delivered),
+        status: typeof entry.status === "string" ? entry.status : "unknown",
+        reason: typeof entry.reason === "string" ? entry.reason : "",
+        error: typeof entry.error === "string" ? entry.error : "",
+        detail: typeof entry.detail === "string" ? entry.detail : "",
+        statusCode: Number.isFinite(entry.statusCode) ? entry.statusCode : undefined,
+        statusMessage: typeof entry.statusMessage === "string" ? entry.statusMessage : "",
+        responseBody: typeof entry.responseBody === "string" ? entry.responseBody : ""
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildRecentEventList(diagnostics, completions, notifications) {
+  const events = [];
+  if (diagnostics?.latestCompletion) {
+    events.push({
+      at: formatDisplayTimestamp(diagnostics.latestCompletion.completedAtIso || diagnostics.lastNotificationAtIso || diagnostics.lastTaskCompleteAtIso, "(unknown)"),
+      type: "latestCompletion",
+      summary: diagnostics.latestCompletion.title || diagnostics.latestCompletion.message || "(none)",
+      data: diagnostics.latestCompletion
+    });
+  }
+
+  if (Array.isArray(completions)) {
+    for (const completion of completions.slice(-5)) {
+      events.push({
+        at: formatDisplayTimestamp(completion.completedAtIso || completion.timestamp, "(unknown)"),
+        type: "completion",
+        summary: completion.title || completion.message || "(none)",
+        data: completion
+      });
+    }
+  }
+
+  if (Array.isArray(notifications)) {
+    for (const notification of notifications.slice(-5)) {
+      events.push({
+        at: formatDisplayTimestamp(notification.timestamp, "(unknown)"),
+        type: "notification",
+        summary: notification.title || notification.message || "(none)",
+        data: notification
+      });
+    }
+  }
+
+  return events.reverse();
+}
+
+function getChronologicalEntries(entries) {
+  return Array.isArray(entries) ? [...entries].reverse() : [];
+}
+
+function formatTinyDecimal(value) {
+  if (!Number.isFinite(value)) {
+    return "0.000";
+  }
+
+  return (Math.round((value + Number.EPSILON) * 1000) / 1000).toFixed(3);
+}
+
 function getOutputChannel() {
   if (!getOutputChannel.channel) {
     getOutputChannel.channel = vscode.window.createOutputChannel("Codex Task Notify");
@@ -415,6 +778,19 @@ function normalizeTimestamp(value) {
   }
 
   return new Date(timestampMs).toISOString();
+}
+
+function formatDisplayTimestamp(value, fallback = "(none)") {
+  if (typeof value !== "string" || !value.trim()) {
+    return fallback;
+  }
+
+  const timestampMs = Date.parse(value);
+  if (!Number.isFinite(timestampMs)) {
+    return value;
+  }
+
+  return new Date(timestampMs).toLocaleString();
 }
 
 async function installLocalCli(context) {
