@@ -1,0 +1,7 @@
+**/.git/**
+**/.DS_Store
+*.vsix
+install.ps1
+install.sh
+resources/notify/README.md
+resources/notify/VSCODE_README.md

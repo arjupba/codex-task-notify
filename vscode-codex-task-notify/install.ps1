@@ -4,7 +4,8 @@ param(
 
 $sourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $packageJsonPath = Join-Path $sourceRoot "package.json"
-$package = Get-Content $packageJsonPath -Raw | ConvertFrom-Json
+$packageJson = [System.IO.File]::ReadAllText($packageJsonPath, [System.Text.Encoding]::UTF8)
+$package = $packageJson | ConvertFrom-Json
 
 $targetDirName = "{0}.{1}-{2}" -f $package.publisher, $package.name, $package.version
 $targetDir = Join-Path $TargetRoot $targetDirName
