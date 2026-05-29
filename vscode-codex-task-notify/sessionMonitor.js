@@ -287,6 +287,11 @@ class CodexSessionMonitor {
     }
 
     if (payloadType === "token_count") {
+      const workspaceMatch = resolveWorkspacePathMatch(turn?.cwd || tracker.cwd);
+      if (workspaceMatch === false) {
+        return;
+      }
+
       const usage = normalizeTokenUsage(payload.info?.last_token_usage || payload.info?.total_token_usage);
       if (usage) {
         tracker.latestTokenUsage = usage;
@@ -301,8 +306,10 @@ class CodexSessionMonitor {
         if (turn) {
           turn.rateLimits = rateLimits;
         }
-        this.stats.lastRateLimits = copyStructuredValue(rateLimits);
-        this.stats.lastRateLimitsAtIso = eventTimestampIso || new Date().toISOString();
+        if (workspaceMatch === true) {
+          this.stats.lastRateLimits = copyStructuredValue(rateLimits);
+          this.stats.lastRateLimitsAtIso = eventTimestampIso || new Date().toISOString();
+        }
       }
       return;
     }
@@ -324,6 +331,10 @@ class CodexSessionMonitor {
 
     this.processedEventIds.add(eventId);
     if (!shouldNotify) {
+      return;
+    }
+
+    if (resolveWorkspacePathMatch(turn?.cwd || tracker.cwd) !== true) {
       return;
     }
 
@@ -626,7 +637,10 @@ function normalizeRecentCompletionList(items, maxLength) {
         return undefined;
       }
 
-      return createRecentCompletion(item);
+      const normalized = createRecentCompletion(item);
+      return resolveWorkspacePathMatch(normalized.cwd) === true
+        ? normalized
+        : undefined;
     })
     .filter(Boolean)
     .slice(0, Math.max(0, maxLength));
@@ -788,6 +802,69 @@ function projectNameFromCwd(cwd) {
   }
 
   return path.posix.basename(normalized);
+}
+
+function resolveWorkspacePathMatch(cwd) {
+  if (typeof cwd !== "string" || !cwd.trim()) {
+    return undefined;
+  }
+
+  const normalizedCwd = normalizeComparablePath(cwd);
+  if (!normalizedCwd) {
+    return undefined;
+  }
+
+  const workspaceRoots = getCurrentWorkspaceRoots();
+  if (!workspaceRoots.length) {
+    return undefined;
+  }
+
+  return workspaceRoots.some(
+    (workspaceRoot) =>
+      isSameOrContainedPath(workspaceRoot, normalizedCwd) ||
+      isSameOrContainedPath(normalizedCwd, workspaceRoot)
+  );
+}
+
+function getCurrentWorkspaceRoots() {
+  return (vscode.workspace.workspaceFolders || [])
+    .map((folder) => {
+      if (!folder || !folder.uri) {
+        return "";
+      }
+
+      if (folder.uri.scheme === "file") {
+        return normalizeComparablePath(folder.uri.fsPath);
+      }
+
+      return normalizeComparablePath(folder.uri.path);
+    })
+    .filter(Boolean);
+}
+
+function normalizeComparablePath(rawPath) {
+  if (typeof rawPath !== "string" || !rawPath.trim()) {
+    return "";
+  }
+
+  let normalized = rawPath.trim().replace(/\\/g, "/").replace(/\/+/g, "/");
+  if (normalized.length > 1) {
+    normalized = normalized.replace(/\/+$/, "");
+  }
+
+  if (/^[A-Za-z]:/.test(normalized)) {
+    normalized = normalized.toLowerCase();
+  }
+
+  return normalized;
+}
+
+function isSameOrContainedPath(basePath, candidatePath) {
+  if (!basePath || !candidatePath) {
+    return false;
+  }
+
+  return basePath === candidatePath || candidatePath.startsWith(`${basePath}/`);
 }
 
 async function resolveSessionsRootUri() {

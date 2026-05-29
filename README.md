@@ -147,6 +147,18 @@ Example with RMB display:
 }
 ```
 
+Windows notification click behavior:
+
+```json
+{
+  "codexTaskNotify.windowsNotification.openVsCodeOnClick": true
+}
+```
+
+When enabled on local Windows, clicking the desktop notification will try to
+bring VS Code back to the relevant workspace. For Remote SSH / WSL sessions,
+this is a best-effort fallback and may only bring VS Code to the foreground.
+
 Notes:
 
 - `inputPerMillionUsd`: uncached input token price
@@ -198,3 +210,4 @@ under a different publisher later, update
 ## Repository
 
 - GitHub: https://github.com/Gtyro/codex-task-notify
+- Design note: [docs/windows-notification-click.md](./docs/windows-notification-click.md)

@@ -1,4 +1,5 @@
 const childProcess = require("child_process");
+const crypto = require("crypto");
 const fs = require("fs/promises");
 const os = require("os");
 const path = require("path");
@@ -14,15 +15,19 @@ const WORKSPACE_INSTALL_SEGMENTS = [".vscode", "codex-task-notify", "bin"];
 const MAX_RECENT_EVENTS = 20;
 const RECENT_COMPLETIONS_STATE_KEY = "recentCompletions";
 const RECENT_NOTIFICATIONS_STATE_KEY = "recentNotifications";
+const NOTIFICATION_DEDUPE_DIR_NAME = "notification-dedupe";
+const NOTIFICATION_DEDUPE_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
 const seenEvents = new Map();
 const recentNotifications = [];
 
 function activate(context) {
   const watcherDisposables = [];
   const sessionMonitor = new CodexSessionMonitor(context, async (payload) => {
-    await showNotification(context, payload);
-    recordRecentNotification(payload);
-    await persistRecentNotifications(context);
+    const shown = await showNotification(context, payload);
+    if (shown) {
+      recordRecentNotification(payload);
+      await persistRecentNotifications(context);
+    }
     await persistRecentCompletions(context, sessionMonitor);
   });
 
@@ -70,15 +75,17 @@ function activate(context) {
         level: "info",
         id: `manual-${Date.now()}`
       };
-      await showNotification(context, payload);
-      recordRecentNotification(payload);
-      await persistRecentNotifications(context);
+      const shown = await showNotification(context, payload);
+      if (shown) {
+        recordRecentNotification(payload);
+        await persistRecentNotifications(context);
+      }
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("codexTaskNotify.showDiagnostics", async () => {
-      await showDiagnostics(sessionMonitor);
+      await showDiagnostics(context, sessionMonitor);
     })
   );
 
@@ -154,9 +161,11 @@ async function handleEventFile(context, uri) {
       eventFile: uri.toString(),
       timestamp: normalizeTimestamp(payload.createdAt) || new Date().toISOString()
     };
-    await showNotification(context, enrichedPayload);
-    recordRecentNotification(enrichedPayload);
-    await persistRecentNotifications(context);
+    const shown = await showNotification(context, enrichedPayload);
+    if (shown) {
+      recordRecentNotification(enrichedPayload);
+      await persistRecentNotifications(context);
+    }
   } catch (error) {
     console.error("[codex-task-notify] Failed to process event file", uri.toString(), error);
   }
@@ -173,6 +182,16 @@ async function showNotification(context, payload) {
       : "Task completed";
   const text = `${title}: ${message}`;
   const level = String(payload.level || "info").toLowerCase();
+  const claimed = await claimNotificationDelivery(context, {
+    ...payload,
+    title,
+    message,
+    level
+  });
+
+  if (!claimed) {
+    return false;
+  }
 
   try {
     const delivery = await deliverExternalNotifications(context, {
@@ -186,11 +205,12 @@ async function showNotification(context, payload) {
     console.error("[codex-task-notify] Failed to deliver external notifications", error);
   }
 
-  if (await tryShowLocalWindowsNotification(context, { title, message, level })) {
-    return;
+  if (await tryShowLocalWindowsNotification(context, { title, message, level, cwd: payload.cwd })) {
+    return true;
   }
 
   await showInAppNotification(text, level);
+  return true;
 }
 
 function tryShowLocalWindowsNotification(context, payload) {
@@ -199,31 +219,42 @@ function tryShowLocalWindowsNotification(context, payload) {
   }
 
   const scriptPath = path.join(context.extensionPath, "scripts", "notify.ps1");
+  const notificationSettings = getWindowsNotificationSettings();
   const levelMap = {
     info: "Info",
     warning: "Warning",
     warn: "Warning",
     error: "Error"
   };
+  const commandArguments = [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    scriptPath,
+    "-Title",
+    payload.title,
+    "-Message",
+    payload.message,
+    "-Level",
+    levelMap[payload.level] || "Info",
+    "-TimeoutSeconds",
+    "5"
+  ];
+
+  if (notificationSettings.openVsCodeOnClick) {
+    commandArguments.push("-OpenVsCodeOnClick");
+
+    const workspacePath = resolveWindowsNotificationWorkspacePath(payload);
+    if (workspacePath) {
+      commandArguments.push("-WorkspacePath", workspacePath);
+    }
+  }
 
   return new Promise((resolve) => {
     childProcess.execFile(
       "powershell.exe",
-      [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        scriptPath,
-        "-Title",
-        payload.title,
-        "-Message",
-        payload.message,
-        "-Level",
-        levelMap[payload.level] || "Info",
-        "-TimeoutSeconds",
-        "5"
-      ],
+      commandArguments,
       {
         windowsHide: true,
         timeout: 15000,
@@ -250,6 +281,121 @@ function tryShowLocalWindowsNotification(context, payload) {
   });
 }
 
+function getWindowsNotificationSettings() {
+  const config = vscode.workspace.getConfiguration("codexTaskNotify");
+  return {
+    openVsCodeOnClick: Boolean(config.get("windowsNotification.openVsCodeOnClick", true))
+  };
+}
+
+function resolveWindowsNotificationWorkspacePath(payload) {
+  if (typeof payload.cwd === "string" && /^[A-Za-z]:[\\/]/.test(payload.cwd.trim())) {
+    return payload.cwd.trim();
+  }
+
+  for (const folder of vscode.workspace.workspaceFolders || []) {
+    if (folder.uri.scheme === "file" && folder.uri.fsPath) {
+      return folder.uri.fsPath;
+    }
+  }
+
+  return "";
+}
+
+async function claimNotificationDelivery(context, payload) {
+  const dedupeKey = buildNotificationDedupeKey(payload);
+  if (!dedupeKey) {
+    return true;
+  }
+
+  const dedupeDir = getNotificationDedupeDir(context);
+  const claimFileName = `${crypto.createHash("sha1").update(dedupeKey).digest("hex")}.json`;
+  const claimPath = path.join(dedupeDir, claimFileName);
+
+  try {
+    await fs.mkdir(dedupeDir, { recursive: true });
+    void pruneNotificationClaims(dedupeDir);
+    await fs.writeFile(
+      claimPath,
+      JSON.stringify(
+        {
+          key: dedupeKey,
+          id: typeof payload.id === "string" ? payload.id : "",
+          source: typeof payload.source === "string" ? payload.source : "",
+          title: typeof payload.title === "string" ? payload.title : "",
+          timestamp: normalizeTimestamp(payload.timestamp) || new Date().toISOString()
+        },
+        null,
+        2
+      ),
+      { encoding: "utf8", flag: "wx" }
+    );
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "EEXIST") {
+      console.log("[codex-task-notify] Skipped duplicate notification", dedupeKey);
+      return false;
+    }
+
+    console.error("[codex-task-notify] Failed to claim notification delivery", error);
+    return true;
+  }
+}
+
+function buildNotificationDedupeKey(payload) {
+  if (payload && typeof payload === "object") {
+    if (typeof payload.sessionId === "string" && payload.sessionId &&
+        typeof payload.turnId === "string" && payload.turnId) {
+      return `session:${payload.sessionId}:${payload.turnId}`;
+    }
+
+    if (typeof payload.id === "string" && payload.id.trim()) {
+      return `id:${payload.id.trim()}`;
+    }
+
+    const eventFile = typeof payload.eventFile === "string" ? payload.eventFile.trim() : "";
+    const timestamp = normalizeTimestamp(payload.timestamp) || normalizeTimestamp(payload.createdAt);
+    const message = typeof payload.message === "string" ? payload.message.trim() : "";
+    if (eventFile && timestamp && message) {
+      return `event:${eventFile}:${timestamp}:${message}`;
+    }
+  }
+
+  return "";
+}
+
+function getNotificationDedupeDir(context) {
+  if (context.globalStorageUri && context.globalStorageUri.scheme === "file") {
+    return path.join(context.globalStorageUri.fsPath, NOTIFICATION_DEDUPE_DIR_NAME);
+  }
+
+  return path.join(os.tmpdir(), "codex-task-notify", NOTIFICATION_DEDUPE_DIR_NAME);
+}
+
+async function pruneNotificationClaims(dedupeDir) {
+  try {
+    const entries = await fs.readdir(dedupeDir, { withFileTypes: true });
+    const now = Date.now();
+    await Promise.all(
+      entries
+        .filter((entry) => entry.isFile())
+        .map(async (entry) => {
+          const filePath = path.join(dedupeDir, entry.name);
+          try {
+            const stat = await fs.stat(filePath);
+            if (now - stat.mtimeMs > NOTIFICATION_DEDUPE_MAX_AGE_MS) {
+              await fs.unlink(filePath);
+            }
+          } catch {
+            // Ignore races with other windows pruning the same old claim file.
+          }
+        })
+    );
+  } catch {
+    // Ignore cleanup failures so notification delivery is not blocked.
+  }
+}
+
 async function showInAppNotification(text, level) {
   if (level === "error") {
     await vscode.window.showErrorMessage(text);
@@ -264,7 +410,7 @@ async function showInAppNotification(text, level) {
   await vscode.window.showInformationMessage(text);
 }
 
-async function showDiagnostics(sessionMonitor) {
+async function showDiagnostics(context, sessionMonitor) {
   const diagnostics = sessionMonitor.getDiagnostics();
   const output = getOutputChannel();
   output.clear();
@@ -275,6 +421,7 @@ async function showDiagnostics(sessionMonitor) {
   output.appendLine(`lastResolvedSessionsRoot: ${diagnostics.lastResolvedSessionsRoot || "(none)"}`);
   output.appendLine(`pollMs: ${diagnostics.pollMs}`);
   output.appendLine(`lookbackDays: ${diagnostics.lookbackDays}`);
+  output.appendLine(`notificationDedupeDir: ${getNotificationDedupeDir(context)}`);
   output.appendLine(`pollCount: ${diagnostics.pollCount}`);
   output.appendLine(`trackedFileCount: ${diagnostics.trackedFileCount}`);
   output.appendLine(`processedEventCount: ${diagnostics.processedEventCount}`);

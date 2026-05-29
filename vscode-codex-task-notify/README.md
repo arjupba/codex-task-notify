@@ -92,12 +92,17 @@ Useful settings:
 {
   "codexTaskNotify.sessionsRoot": "",
   "codexTaskNotify.sessionPollMs": 1500,
-  "codexTaskNotify.sessionLookbackDays": 7
+  "codexTaskNotify.sessionLookbackDays": 7,
+  "codexTaskNotify.windowsNotification.openVsCodeOnClick": true
 }
 ```
 
 Set `codexTaskNotify.sessionsRoot` manually if your remote or local Codex
 session directory is not in the default location.
+
+When `codexTaskNotify.windowsNotification.openVsCodeOnClick` is enabled,
+clicking a local Windows notification will try to reopen or foreground VS Code.
+For local Windows workspaces it also tries to reuse the related workspace path.
 
 导出 CLI 后，可以像下面这样触发通知：
 

@@ -169,6 +169,11 @@
           "default": 10000,
           "minimum": 1000,
           "description": "Timeout in milliseconds for ntfy requests."
+        },
+        "codexTaskNotify.windowsNotification.openVsCodeOnClick": {
+          "type": "boolean",
+          "default": true,
+          "description": "When a local Windows notification is clicked, try to bring VS Code back to the relevant workspace."
         }
       }
     },
