@@ -1,77 +1,9 @@
-const vscode = require("vscode");
-
-const BUILT_IN_PRICING_VERIFIED_AT = "2026-05-28";
-const BUILT_IN_PRICING_SOURCE_URLS = [
-  "https://openai.com/api/pricing/",
-  "https://developers.openai.com/api/docs/pricing"
-];
-
-// Standard short-context API prices, verified from the official pricing pages above.
-const BUILT_IN_OPENAI_PRICING = Object.freeze({
-  "gpt-5.5": Object.freeze({
-    inputPerMillionUsd: 5,
-    cachedInputPerMillionUsd: 0.5,
-    outputPerMillionUsd: 30
-  }),
-  "gpt-5.4": Object.freeze({
-    inputPerMillionUsd: 2.5,
-    cachedInputPerMillionUsd: 0.25,
-    outputPerMillionUsd: 15
-  }),
-  "gpt-5.4-mini": Object.freeze({
-    inputPerMillionUsd: 0.75,
-    cachedInputPerMillionUsd: 0.075,
-    outputPerMillionUsd: 4.5
-  }),
-  "gpt-5.4-nano": Object.freeze({
-    inputPerMillionUsd: 0.2,
-    cachedInputPerMillionUsd: 0.02,
-    outputPerMillionUsd: 1.25
-  }),
-  "gpt-5.3-codex": Object.freeze({
-    inputPerMillionUsd: 1.75,
-    cachedInputPerMillionUsd: 0.175,
-    outputPerMillionUsd: 14
-  }),
-  "gpt-5": Object.freeze({
-    inputPerMillionUsd: 1.25,
-    cachedInputPerMillionUsd: 0.125,
-    outputPerMillionUsd: 10
-  }),
-  "gpt-5-mini": Object.freeze({
-    inputPerMillionUsd: 0.25,
-    cachedInputPerMillionUsd: 0.025,
-    outputPerMillionUsd: 2
-  }),
-  "gpt-5-nano": Object.freeze({
-    inputPerMillionUsd: 0.05,
-    cachedInputPerMillionUsd: 0.005,
-    outputPerMillionUsd: 0.4
-  })
-});
-
-function getCostSettings() {
-  const config = vscode.workspace.getConfiguration("codexTaskNotify");
-  const currencyRaw = String(config.get("costEstimation.outputCurrency", "USD") || "USD").trim();
-  const exchangeRateRaw = config.get("costEstimation.exchangeRate", 1);
-
-  return {
-    enabled: Boolean(config.get("costEstimation.enabled", false)),
-    includeInNotifications: Boolean(config.get("costEstimation.includeInNotifications", false)),
-    useBuiltInOpenAIPricing: Boolean(config.get("costEstimation.useBuiltInOpenAIPricing", false)),
-    outputCurrency: currencyRaw ? currencyRaw.toUpperCase() : "USD",
-    exchangeRate: Number.isFinite(exchangeRateRaw) && exchangeRateRaw > 0 ? exchangeRateRaw : 1,
-    customModelPricing: normalizePricingMap(config.get("costEstimation.customModelPricing", {}))
-  };
-}
-
-function getBuiltInPricingReference() {
-  return {
-    verifiedAt: BUILT_IN_PRICING_VERIFIED_AT,
-    sourceUrls: [...BUILT_IN_PRICING_SOURCE_URLS],
-    models: copyPlainObject(BUILT_IN_OPENAI_PRICING)
-  };
-}
+const {
+  BUILT_IN_PRICING_VERIFIED_AT,
+  getBuiltInModelPricing,
+  getBuiltInPricingReference
+} = require("./builtInPricingReference");
+const { getCostSettings } = require("./costSettings");
 
 function estimateCompletionCost(completion, settings = getCostSettings()) {
   if (!settings.enabled) {
@@ -212,7 +144,7 @@ function resolveModelPricing(model, settings) {
     return undefined;
   }
 
-  const builtIn = BUILT_IN_OPENAI_PRICING[model];
+  const builtIn = getBuiltInModelPricing(model);
   if (!builtIn) {
     return undefined;
   }
@@ -221,38 +153,6 @@ function resolveModelPricing(model, settings) {
     source: "built-in-openai",
     pricing: builtIn
   };
-}
-
-function normalizePricingMap(rawValue) {
-  if (!rawValue || typeof rawValue !== "object") {
-    return {};
-  }
-
-  const normalized = {};
-  for (const [rawModel, rawPricing] of Object.entries(rawValue)) {
-    const model = normalizeModelId(rawModel);
-    if (!model || !rawPricing || typeof rawPricing !== "object") {
-      continue;
-    }
-
-    const pricing = {
-      inputPerMillionUsd: finiteOrUndefined(rawPricing.inputPerMillionUsd),
-      cachedInputPerMillionUsd: finiteOrUndefined(rawPricing.cachedInputPerMillionUsd),
-      outputPerMillionUsd: finiteOrUndefined(rawPricing.outputPerMillionUsd)
-    };
-
-    if (
-      pricing.inputPerMillionUsd === undefined &&
-      pricing.cachedInputPerMillionUsd === undefined &&
-      pricing.outputPerMillionUsd === undefined
-    ) {
-      continue;
-    }
-
-    normalized[model] = pricing;
-  }
-
-  return normalized;
 }
 
 function normalizeModelId(value) {
