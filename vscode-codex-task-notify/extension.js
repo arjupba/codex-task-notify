@@ -15,6 +15,9 @@ const WORKSPACE_INSTALL_SEGMENTS = [".vscode", "codex-task-notify", "bin"];
 const MAX_RECENT_EVENTS = 20;
 const RECENT_COMPLETIONS_STATE_KEY = "recentCompletions";
 const RECENT_NOTIFICATIONS_STATE_KEY = "recentNotifications";
+const GLOBAL_HISTORY_STATE_KEY = "recentHistoryByWorkspace";
+const GLOBAL_HISTORY_SCHEMA_VERSION = 1;
+const NO_WORKSPACE_HISTORY_KEY = "workspace:none";
 const NOTIFICATION_DEDUPE_DIR_NAME = "notification-dedupe";
 const NOTIFICATION_DEDUPE_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
 const seenEvents = new Map();
@@ -26,9 +29,8 @@ function activate(context) {
     const shown = await showNotification(context, payload);
     if (shown) {
       recordRecentNotification(payload);
-      await persistRecentNotifications(context);
     }
-    await persistRecentCompletions(context, sessionMonitor);
+    await persistWorkspaceHistory(context, sessionMonitor);
   });
 
   restorePersistedState(context, sessionMonitor);
@@ -42,8 +44,8 @@ function activate(context) {
       const pattern = new vscode.RelativePattern(folder, WATCH_GLOB);
       const watcher = vscode.workspace.createFileSystemWatcher(pattern);
 
-      watcher.onDidCreate((uri) => handleEventFile(context, uri), null, context.subscriptions);
-      watcher.onDidChange((uri) => handleEventFile(context, uri), null, context.subscriptions);
+      watcher.onDidCreate((uri) => handleEventFile(context, sessionMonitor, uri), null, context.subscriptions);
+      watcher.onDidChange((uri) => handleEventFile(context, sessionMonitor, uri), null, context.subscriptions);
 
       watcherDisposables.push(watcher);
       context.subscriptions.push(watcher);
@@ -51,10 +53,16 @@ function activate(context) {
   };
 
   rebuildWatchers();
+  void persistWorkspaceHistory(context, sessionMonitor);
   void sessionMonitor.start();
 
   context.subscriptions.push(
-    vscode.workspace.onDidChangeWorkspaceFolders(() => rebuildWatchers())
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      rebuildWatchers();
+      restorePersistedState(context, sessionMonitor);
+      void persistWorkspaceHistory(context, sessionMonitor);
+      void sessionMonitor.restart();
+    })
   );
 
   context.subscriptions.push(
@@ -78,8 +86,8 @@ function activate(context) {
       const shown = await showNotification(context, payload);
       if (shown) {
         recordRecentNotification(payload);
-        await persistRecentNotifications(context);
       }
+      await persistWorkspaceHistory(context, sessionMonitor);
     })
   );
 
@@ -132,7 +140,7 @@ function activate(context) {
   });
 }
 
-async function handleEventFile(context, uri) {
+async function handleEventFile(context, sessionMonitor, uri) {
   try {
     const bytes = await vscode.workspace.fs.readFile(uri);
     const text = Buffer.from(bytes).toString("utf8");
@@ -164,8 +172,8 @@ async function handleEventFile(context, uri) {
     const shown = await showNotification(context, enrichedPayload);
     if (shown) {
       recordRecentNotification(enrichedPayload);
-      await persistRecentNotifications(context);
     }
+    await persistWorkspaceHistory(context, sessionMonitor);
   } catch (error) {
     console.error("[codex-task-notify] Failed to process event file", uri.toString(), error);
   }
@@ -412,6 +420,8 @@ async function showInAppNotification(text, level) {
 
 async function showDiagnostics(context, sessionMonitor) {
   const diagnostics = sessionMonitor.getDiagnostics();
+  const workspaceHistory = getCurrentWorkspaceHistoryDescriptor();
+  const historyStore = readGlobalHistoryStore(context);
   const output = getOutputChannel();
   output.clear();
   output.appendLine("===== Codex Task Notify Diagnostics =====");
@@ -422,6 +432,10 @@ async function showDiagnostics(context, sessionMonitor) {
   output.appendLine(`pollMs: ${diagnostics.pollMs}`);
   output.appendLine(`lookbackDays: ${diagnostics.lookbackDays}`);
   output.appendLine(`notificationDedupeDir: ${getNotificationDedupeDir(context)}`);
+  output.appendLine(`historyStorage: globalState`);
+  output.appendLine(`historyWorkspaceKey: ${workspaceHistory.key}`);
+  output.appendLine(`historyWorkspaceLabel: ${workspaceHistory.label}`);
+  output.appendLine(`historyWorkspaceCount: ${Object.keys(historyStore.workspaces).length}`);
   output.appendLine(`pollCount: ${diagnostics.pollCount}`);
   output.appendLine(`trackedFileCount: ${diagnostics.trackedFileCount}`);
   output.appendLine(`processedEventCount: ${diagnostics.processedEventCount}`);
@@ -469,12 +483,18 @@ async function showDiagnostics(context, sessionMonitor) {
 async function showDebugSnapshot(sessionMonitor) {
   const diagnostics = sessionMonitor.getDiagnostics();
   const snapshotState = sessionMonitor.getSnapshotState();
+  const workspaceHistory = getCurrentWorkspaceHistoryDescriptor();
   const output = getOutputChannel();
   output.clear();
   output.appendLine("===== Codex Task Notify Debug Snapshot =====");
 
   const snapshot = {
     capturedAt: new Date().toISOString(),
+    history: {
+      storage: "globalState",
+      workspaceKey: workspaceHistory.key,
+      workspaceLabel: workspaceHistory.label
+    },
     diagnostics,
     costSettings: getCostSettings(),
     notificationSettings: getNotificationChannelSettings(),
@@ -561,27 +581,181 @@ function recordRecentNotification(payload) {
 }
 
 function restorePersistedState(context, sessionMonitor) {
-  const savedCompletions = context.workspaceState.get(RECENT_COMPLETIONS_STATE_KEY, []);
-  const savedNotifications = context.workspaceState.get(RECENT_NOTIFICATIONS_STATE_KEY, []);
+  const historyBucket = readCurrentWorkspaceHistoryBucket(context);
 
-  sessionMonitor.restoreRecentCompletions(savedCompletions);
+  sessionMonitor.restoreRecentCompletions(historyBucket.recentCompletions);
 
   recentNotifications.length = 0;
-  recentNotifications.push(...normalizeNotificationRecordList(savedNotifications, MAX_RECENT_EVENTS));
+  recentNotifications.push(...historyBucket.recentNotifications);
 }
 
-async function persistRecentNotifications(context) {
-  await context.workspaceState.update(
-    RECENT_NOTIFICATIONS_STATE_KEY,
-    JSON.parse(JSON.stringify(recentNotifications.slice(0, MAX_RECENT_EVENTS)))
-  );
+async function persistWorkspaceHistory(context, sessionMonitor) {
+  const workspaceHistory = getCurrentWorkspaceHistoryDescriptor();
+  const store = readGlobalHistoryStore(context);
+  store.workspaces[workspaceHistory.key] = {
+    workspaceLabel: workspaceHistory.label,
+    workspaceRoots: workspaceHistory.roots,
+    updatedAt: new Date().toISOString(),
+    recentCompletions: sessionMonitor.getRecentCompletions().slice(0, MAX_RECENT_EVENTS),
+    recentNotifications: JSON.parse(JSON.stringify(recentNotifications.slice(0, MAX_RECENT_EVENTS)))
+  };
+
+  await context.globalState.update(GLOBAL_HISTORY_STATE_KEY, store);
 }
 
-async function persistRecentCompletions(context, sessionMonitor) {
-  await context.workspaceState.update(
-    RECENT_COMPLETIONS_STATE_KEY,
-    sessionMonitor.getRecentCompletions().slice(0, MAX_RECENT_EVENTS)
-  );
+function readCurrentWorkspaceHistoryBucket(context) {
+  const workspaceHistory = getCurrentWorkspaceHistoryDescriptor();
+  const store = readGlobalHistoryStore(context);
+  const currentBucket = store.workspaces[workspaceHistory.key];
+  if (currentBucket) {
+    return normalizeHistoryBucket(currentBucket);
+  }
+
+  return normalizeHistoryBucket({
+    workspaceLabel: workspaceHistory.label,
+    workspaceRoots: workspaceHistory.roots,
+    recentCompletions: context.workspaceState.get(RECENT_COMPLETIONS_STATE_KEY, []),
+    recentNotifications: context.workspaceState.get(RECENT_NOTIFICATIONS_STATE_KEY, [])
+  });
+}
+
+function readGlobalHistoryStore(context) {
+  return normalizeGlobalHistoryStore(context.globalState.get(GLOBAL_HISTORY_STATE_KEY));
+}
+
+function normalizeGlobalHistoryStore(rawValue) {
+  const normalized = {
+    version: GLOBAL_HISTORY_SCHEMA_VERSION,
+    workspaces: {}
+  };
+
+  if (!rawValue || typeof rawValue !== "object") {
+    return normalized;
+  }
+
+  if (!rawValue.workspaces || typeof rawValue.workspaces !== "object") {
+    return normalized;
+  }
+
+  for (const [workspaceKey, bucket] of Object.entries(rawValue.workspaces)) {
+    if (typeof workspaceKey !== "string" || !workspaceKey.trim()) {
+      continue;
+    }
+
+    normalized.workspaces[workspaceKey] = normalizeHistoryBucket(bucket);
+  }
+
+  return normalized;
+}
+
+function normalizeHistoryBucket(rawValue) {
+  const value = rawValue && typeof rawValue === "object" ? rawValue : {};
+  const workspaceRoots = Array.isArray(value.workspaceRoots)
+    ? value.workspaceRoots.filter((entry) => typeof entry === "string" && entry.trim())
+    : [];
+
+  return {
+    workspaceLabel: typeof value.workspaceLabel === "string" ? value.workspaceLabel : "",
+    workspaceRoots,
+    updatedAt: normalizeTimestamp(value.updatedAt) || "",
+    recentCompletions: normalizeRecentCompletionList(value.recentCompletions, MAX_RECENT_EVENTS),
+    recentNotifications: normalizeNotificationRecordList(value.recentNotifications, MAX_RECENT_EVENTS)
+  };
+}
+
+function normalizeRecentCompletionList(items, maxLength) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return undefined;
+      }
+
+      if (typeof item.id !== "string" || !item.id.trim()) {
+        return undefined;
+      }
+
+      return normalizeRecentCompletionRecord(item);
+    })
+    .filter(Boolean)
+    .slice(0, Math.max(0, maxLength));
+}
+
+function normalizeRecentCompletionRecord(payload) {
+  return {
+    id: typeof payload.id === "string" ? payload.id : `completion-${Date.now()}`,
+    title: typeof payload.title === "string" && payload.title.trim() ? payload.title.trim() : "Codex task complete",
+    message: typeof payload.message === "string" && payload.message.trim() ? payload.message.trim() : "Task completed",
+    level: typeof payload.level === "string" ? payload.level : "info",
+    source: typeof payload.source === "string" && payload.source.trim() ? payload.source.trim() : "codex-session",
+    completedAtIso:
+      normalizeTimestamp(payload.completedAtIso) ||
+      normalizeTimestamp(payload.timestamp) ||
+      normalizeTimestamp(payload.createdAt) ||
+      new Date().toISOString(),
+    sessionId: typeof payload.sessionId === "string" ? payload.sessionId : "",
+    turnId: typeof payload.turnId === "string" ? payload.turnId : "",
+    projectName: typeof payload.projectName === "string" ? payload.projectName : "",
+    cwd: typeof payload.cwd === "string" ? payload.cwd : "",
+    sessionFile: typeof payload.sessionFile === "string" ? payload.sessionFile : "",
+    userMessage: typeof payload.userMessage === "string" ? payload.userMessage : "",
+    lastAgentMessage: typeof payload.lastAgentMessage === "string" ? payload.lastAgentMessage : "",
+    errorMessage: typeof payload.errorMessage === "string" ? payload.errorMessage : "",
+    model: typeof payload.model === "string" ? payload.model : "",
+    tokenUsage: payload.tokenUsage && typeof payload.tokenUsage === "object" ? JSON.parse(JSON.stringify(payload.tokenUsage)) : undefined,
+    rateLimits: payload.rateLimits && typeof payload.rateLimits === "object" ? JSON.parse(JSON.stringify(payload.rateLimits)) : undefined,
+    costEstimate: payload.costEstimate && typeof payload.costEstimate === "object" ? JSON.parse(JSON.stringify(payload.costEstimate)) : undefined
+  };
+}
+
+function getCurrentWorkspaceHistoryDescriptor() {
+  const folders = vscode.workspace.workspaceFolders || [];
+  const workspaceRoots = folders
+    .map((folder) => folder?.uri?.toString())
+    .filter((entry) => typeof entry === "string" && entry.trim())
+    .sort();
+
+  if (!workspaceRoots.length) {
+    return {
+      key: NO_WORKSPACE_HISTORY_KEY,
+      label: "(no workspace)",
+      roots: []
+    };
+  }
+
+  const workspaceNames = folders
+    .map((folder) => {
+      if (folder && typeof folder.name === "string" && folder.name.trim()) {
+        return folder.name.trim();
+      }
+
+      return workspaceFolderLabelFromUri(folder?.uri);
+    })
+    .filter(Boolean)
+    .sort();
+
+  return {
+    key: `workspace:${crypto.createHash("sha1").update(JSON.stringify(workspaceRoots)).digest("hex")}`,
+    label: workspaceNames.join(", "),
+    roots: workspaceRoots
+  };
+}
+
+function workspaceFolderLabelFromUri(uri) {
+  if (!uri) {
+    return "";
+  }
+
+  if (uri.scheme === "file" && uri.fsPath) {
+    const trimmed = uri.fsPath.replace(/[\\/]+$/, "");
+    return path.basename(trimmed) || trimmed;
+  }
+
+  const trimmedPath = typeof uri.path === "string" ? uri.path.replace(/\/+$/, "") : "";
+  return path.posix.basename(trimmedPath) || uri.toString();
 }
 
 function normalizeNotificationRecordList(items, maxLength) {
