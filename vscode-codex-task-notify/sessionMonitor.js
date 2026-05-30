@@ -292,11 +292,11 @@ class CodexSessionMonitor {
         return;
       }
 
-      const usage = normalizeTokenUsage(payload.info?.last_token_usage || payload.info?.total_token_usage);
-      if (usage) {
-        tracker.latestTokenUsage = usage;
+      const totalUsage = normalizeTokenUsage(payload.info?.total_token_usage);
+      if (totalUsage) {
+        tracker.latestTokenUsage = totalUsage;
         if (turn) {
-          turn.tokenUsage = usage;
+          turn.tokenUsage = totalUsage;
         }
       }
 
@@ -324,6 +324,17 @@ class CodexSessionMonitor {
       return;
     }
 
+    const workspaceMatch = resolveWorkspacePathMatch(turn?.cwd || tracker.cwd);
+    if (workspaceMatch === false) {
+      return;
+    }
+
+    const totalTokenUsage = turn?.tokenUsage || tracker.latestTokenUsage;
+    const tokenUsage = buildCompletionTokenUsage(totalTokenUsage, tracker.lastCompletedTokenUsage);
+    if (totalTokenUsage) {
+      tracker.lastCompletedTokenUsage = totalTokenUsage;
+    }
+
     const completedAtMs = resolveCompletionTimestampMs(payload.completed_at, eventTimestampIso);
     const shouldNotify =
       emitNotifications ||
@@ -334,13 +345,12 @@ class CodexSessionMonitor {
       return;
     }
 
-    if (resolveWorkspacePathMatch(turn?.cwd || tracker.cwd) !== true) {
+    if (workspaceMatch !== true) {
       return;
     }
 
     const level = turn?.errorMessage ? "error" : "info";
     const title = buildNotificationTitle(tracker, turn, level);
-    const tokenUsage = turn?.tokenUsage || tracker.latestTokenUsage;
     const rateLimits = turn?.rateLimits || tracker.latestRateLimits;
     const model = turn?.model;
     const completedAtIso =
@@ -433,6 +443,7 @@ function createTracker(uri) {
     cwd: undefined,
     activeTurnId: undefined,
     latestTokenUsage: undefined,
+    lastCompletedTokenUsage: undefined,
     latestRateLimits: undefined,
     turns: new Map()
   };
@@ -445,6 +456,7 @@ function resetTrackerState(tracker) {
   tracker.lastKnownMtimeMs = 0;
   tracker.activeTurnId = undefined;
   tracker.latestTokenUsage = undefined;
+  tracker.lastCompletedTokenUsage = undefined;
   tracker.latestRateLimits = undefined;
   tracker.turns.clear();
 }
@@ -506,6 +518,56 @@ function normalizeTokenUsage(rawUsage) {
     reasoningOutputTokens,
     totalTokens
   };
+}
+
+function buildCompletionTokenUsage(currentTotalUsage, previousTotalUsage) {
+  if (!currentTotalUsage || currentTotalUsage.totalTokens === undefined) {
+    return undefined;
+  }
+
+  if (!previousTotalUsage || previousTotalUsage.totalTokens === undefined) {
+    return {
+      ...copyStructuredValue(currentTotalUsage),
+      source: "session-total-initial"
+    };
+  }
+
+  if (currentTotalUsage.totalTokens < previousTotalUsage.totalTokens) {
+    return undefined;
+  }
+
+  const tokenUsage = {
+    inputTokens: subtractUsageValue(currentTotalUsage.inputTokens, previousTotalUsage.inputTokens),
+    cachedInputTokens: subtractUsageValue(
+      currentTotalUsage.cachedInputTokens,
+      previousTotalUsage.cachedInputTokens
+    ),
+    outputTokens: subtractUsageValue(currentTotalUsage.outputTokens, previousTotalUsage.outputTokens),
+    reasoningOutputTokens: subtractUsageValue(
+      currentTotalUsage.reasoningOutputTokens,
+      previousTotalUsage.reasoningOutputTokens
+    ),
+    totalTokens: subtractUsageValue(currentTotalUsage.totalTokens, previousTotalUsage.totalTokens),
+    source: "session-total-delta"
+  };
+
+  return tokenUsage.totalTokens !== undefined ? tokenUsage : undefined;
+}
+
+function subtractUsageValue(currentValue, previousValue) {
+  if (currentValue === undefined) {
+    return undefined;
+  }
+
+  if (previousValue === undefined) {
+    return currentValue;
+  }
+
+  if (currentValue < previousValue) {
+    return undefined;
+  }
+
+  return currentValue - previousValue;
 }
 
 function normalizeRateLimits(rawRateLimits) {
