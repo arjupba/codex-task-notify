@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.2
+
+- Restore reliable Windows notification click handling by keeping the tray event loop alive
+- Reopen or focus the matching VS Code workspace from Windows task notifications
+- Pass workspace-path and click-through arguments through the bundled WSL and PowerShell notify scripts
+
 ## 0.0.1
 
 - Initial release

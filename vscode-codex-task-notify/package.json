@@ -2,7 +2,7 @@
   "name": "codex-task-notify",
   "displayName": "Codex Task Notify",
   "description": "Local task-completion notifications for Codex across Windows, WSL, and Remote SSH. 为 Codex 提供跨 Windows、WSL 与 Remote SSH 的本地任务完成通知。",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "rmargin",
   "license": "MIT",
   "icon": "icon.png",
