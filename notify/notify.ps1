@@ -114,7 +114,15 @@ function Open-VsCode {
 $icon = New-Object System.Windows.Forms.NotifyIcon
 $icon.Visible = $true
 $icon.Text = "Codex Notify"
-$clickSignal = New-Object System.Threading.ManualResetEventSlim($false)
+$form = New-Object System.Windows.Forms.Form
+$form.ShowInTaskbar = $false
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+$form.Opacity = 0
+$form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+$form.Location = New-Object System.Drawing.Point(-2000, -2000)
+$form.Width = 1
+$form.Height = 1
+$script:form = $form
 
 switch ($Level) {
   "Warning" {
@@ -133,23 +141,50 @@ switch ($Level) {
 
 $icon.BalloonTipTitle = $Title
 $icon.BalloonTipText = $Message
+$script:timer = $null
 
 if ($OpenVsCodeOnClick) {
   $icon.add_BalloonTipClicked({
-    try {
-      Open-VsCode
-    } finally {
-      $script:clickSignal.Set()
+    Open-VsCode
+    if ($script:form) {
+      $script:form.Close()
     }
   })
 }
 
-$icon.ShowBalloonTip([Math]::Max(1, $TimeoutSeconds) * 1000)
-
 if ($OpenVsCodeOnClick) {
-  [void]$clickSignal.Wait(2500)
-} else {
-  Start-Sleep -Seconds ([Math]::Max(2, $TimeoutSeconds))
+  $timer = New-Object System.Windows.Forms.Timer
+  $script:timer = $timer
+  $timer.Interval = [Math]::Max(1, $TimeoutSeconds) * 1000
+  $timer.Add_Tick({
+    if ($script:timer) {
+      $script:timer.Stop()
+    }
+    if ($script:form) {
+      $script:form.Close()
+    }
+  })
+
+  $form.Add_Shown({
+    $icon.ShowBalloonTip([Math]::Max(1, $TimeoutSeconds) * 1000)
+    $timer.Start()
+  })
+
+  $form.Add_FormClosed({
+    if ($script:timer) {
+      $script:timer.Stop()
+    }
+    $icon.Visible = $false
+    $icon.Dispose()
+    if ($script:timer) {
+      $script:timer.Dispose()
+    }
+  })
+
+  [void][System.Windows.Forms.Application]::Run($form)
+  return
 }
 
+$icon.ShowBalloonTip([Math]::Max(1, $TimeoutSeconds) * 1000)
+Start-Sleep -Seconds ([Math]::Max(2, $TimeoutSeconds))
 $icon.Dispose()

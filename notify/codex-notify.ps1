@@ -6,6 +6,8 @@ param(
   [ValidateSet("Info", "Warning", "Error")]
   [string]$Level = "Info",
   [int]$TimeoutSeconds = 5,
+  [switch]$OpenVsCodeOnClick,
+  [string]$WorkspacePath = "",
   [string]$WorkspaceRoot,
   [string]$EventDir
 )
@@ -52,5 +54,13 @@ $toastArgs = @(
   "-Level", $Level,
   "-TimeoutSeconds", $TimeoutSeconds
 )
+
+if ($OpenVsCodeOnClick) {
+  $toastArgs += "-OpenVsCodeOnClick"
+}
+
+if ($WorkspacePath) {
+  $toastArgs += @("-WorkspacePath", $WorkspacePath)
+}
 
 Invoke-NotifyScript -ScriptName "notify.ps1" -Arguments $toastArgs

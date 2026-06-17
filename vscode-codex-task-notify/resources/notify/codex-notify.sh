@@ -6,6 +6,8 @@ message="Task completed"
 mode="Auto"
 level="Info"
 timeout_seconds="5"
+open_vscode_on_click="false"
+workspace_path=""
 workspace_root=""
 event_dir=""
 
@@ -29,6 +31,14 @@ while (($#)); do
       ;;
     -TimeoutSeconds)
       timeout_seconds="${2:-5}"
+      shift 2
+      ;;
+    -OpenVsCodeOnClick)
+      open_vscode_on_click="true"
+      shift
+      ;;
+    -WorkspacePath)
+      workspace_path="${2:-}"
       shift 2
       ;;
     -WorkspaceRoot)
@@ -81,8 +91,19 @@ if [[ "$target_mode" == "VSCode" ]]; then
   exit $?
 fi
 
-bash "$script_dir/notify.sh" \
-  -Title "$title" \
-  -Message "$message" \
-  -Level "$level" \
+args=(
+  -Title "$title"
+  -Message "$message"
+  -Level "$level"
   -TimeoutSeconds "$timeout_seconds"
+)
+
+if [[ "$open_vscode_on_click" == "true" ]]; then
+  args+=(-OpenVsCodeOnClick)
+fi
+
+if [[ -n "$workspace_path" ]]; then
+  args+=(-WorkspacePath "$workspace_path")
+fi
+
+bash "$script_dir/notify.sh" "${args[@]}"
