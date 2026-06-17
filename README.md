@@ -1,5 +1,7 @@
 # Codex Task Notify
 
+[English](./README.md) | [简体中文](./README.zh-CN.md)
+
 Local Windows notifications for Codex task completion, including support for:
 
 - local Windows workspaces
