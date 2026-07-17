@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.3
+
+- Harden Windows notification click activation and diagnostics
+- Add Chinese documentation for the repository and Marketplace listing
+
 ## 0.0.2
 
 - Restore reliable Windows notification click handling by keeping the tray event loop alive

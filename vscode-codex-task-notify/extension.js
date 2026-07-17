@@ -5,7 +5,8 @@ const {
   showDiagnostics,
   showRecentCosts,
   showRecentEvents,
-  showRecentHistory
+  showRecentHistory,
+  showWindowsNotificationDiagnostics
 } = require("./diagnosticsView");
 const {
   normalizeTimestamp,
@@ -102,7 +103,13 @@ function activate(context) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("codexTaskNotify.showRecentEvents", async () => {
-      await showRecentEvents(sessionMonitor, recentNotifications);
+      await showRecentEvents(context, sessionMonitor, recentNotifications);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("codexTaskNotify.showWindowsNotificationDiagnostics", async () => {
+      await showWindowsNotificationDiagnostics(context);
     })
   );
 

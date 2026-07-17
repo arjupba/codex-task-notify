@@ -2,37 +2,31 @@
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-Local Windows notifications for Codex task completion, including support for:
+Local task-completion notifications for Codex across Windows, WSL, and Remote SSH.
 
-- local Windows workspaces
-- VS Code Remote WSL
-- VS Code Remote SSH / remote Linux servers
+## Core Features
 
-## Repo layout
-
-- `docs/` contains screenshots and documentation assets
-- `notify/` contains the trigger scripts used by tasks
-- `vscode-codex-task-notify/` contains the local VS Code extension
-- `install.ps1` and `install.sh` install the extension into your local VS Code
-
-## Default behavior
-
-- Local / VS Code session monitoring: read real Codex session files under `.codex/sessions` and notify on `task_complete`
-- Windows: show a Windows system notification
-- WSL: forward to Windows via `powershell.exe`
-- Remote Linux automatic mode: monitor Codex session files directly when the VS Code extension can see the remote filesystem
-- Remote Linux bridge mode: write a workspace event to `tmp/codex-task-notify/task.json`, then let the local VS Code extension show the notification
-- Token usage is read from real session data; cost estimation is optional and based on your own pricing settings
+- Automatically watches Codex sessions and notifies when tasks finish
+- Shows local Windows desktop notifications when possible
+- Supports local Windows workspaces, VS Code Remote WSL, and Remote SSH / remote Linux servers
+- Can estimate cost and deliver optional ntfy, sound, and webhook notifications
+- Can optionally export helper scripts for automation, without making CLI the primary user flow
 
 ## Install
 
-Recommended when published to Marketplace:
+Recommended:
 
 1. Install the VS Code extension `rmargin.codex-task-notify`
-2. Run `Codex Task Notify: Install Local CLI` or `Codex Task Notify: Install Workspace CLI`
-3. Reload VS Code if prompted
+2. Reload VS Code if prompted
+3. Run `Codex Task Notify: Test Notification` once to verify the local notification path
 
-Repo-based install for development or before Marketplace publishing:
+Marketplace command line:
+
+```bash
+code --install-extension rmargin.codex-task-notify
+```
+
+Repo-based side-load:
 
 Windows:
 
@@ -46,31 +40,31 @@ WSL or Linux:
 bash ./install.sh
 ```
 
-After install, reload VS Code once.
+## Quick Setup
 
-## Use
+After installation, these command-palette entries are the most useful:
 
-Windows:
+- `Codex Task Notify: Test Notification`
+- `Codex Task Notify: Show Diagnostics`
+- `Codex Task Notify: Show Recent History`
+- `Codex Task Notify: Show Recent Costs`
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\notify\codex-notify.ps1 -Title "Codex complete" -Message "Task completed"
-```
+## Recommended Use
 
-WSL or Linux:
+For most users, the normal flow is:
 
-```bash
-bash ./notify/codex-notify.sh -Title "Codex complete" -Message "Task completed"
-```
+1. Install the extension
+2. Let the extension monitor Codex sessions automatically
+3. Use `Show Diagnostics` if session detection is wrong in your environment
 
-## Automatic session monitoring
+## Configuration
 
-The VS Code extension now also watches real Codex session files and triggers
-notifications when a session emits `task_complete`.
+### Session Detection
 
 Default session root behavior:
 
 - Local Windows: `%USERPROFILE%\\.codex\\sessions`
-- Remote SSH / WSL: auto-detect the remote home directory and use `~/.codex/sessions`
+- Remote SSH or WSL: the extension tries to infer the remote home directory and then uses `~/.codex/sessions`
 
 If auto-detection is wrong in your environment, set these VS Code settings:
 
@@ -78,46 +72,18 @@ If auto-detection is wrong in your environment, set these VS Code settings:
 {
   "codexTaskNotify.sessionsRoot": "",
   "codexTaskNotify.sessionPollMs": 1500,
-  "codexTaskNotify.sessionLookbackDays": 7,
-  "codexTaskNotify.costEstimation.enabled": false,
-  "codexTaskNotify.costEstimation.useBuiltInOpenAIPricing": false,
-  "codexTaskNotify.costEstimation.includeInNotifications": false,
-  "codexTaskNotify.costEstimation.outputCurrency": "USD",
-  "codexTaskNotify.costEstimation.exchangeRate": 1,
-  "codexTaskNotify.costEstimation.customModelPricing": {}
+  "codexTaskNotify.sessionLookbackDays": 7
 }
 ```
 
-`customModelPricing` example:
+Set `codexTaskNotify.sessionsRoot` explicitly when needed, for example:
 
-```json
-{
-  "codexTaskNotify.costEstimation.enabled": true,
-  "codexTaskNotify.costEstimation.useBuiltInOpenAIPricing": false,
-  "codexTaskNotify.costEstimation.includeInNotifications": false,
-  "codexTaskNotify.costEstimation.outputCurrency": "USD",
-  "codexTaskNotify.costEstimation.exchangeRate": 1,
-  "codexTaskNotify.costEstimation.customModelPricing": {
-    "gpt-5.4": {
-      "inputPerMillionUsd": 2.5,
-      "cachedInputPerMillionUsd": 0.25,
-      "outputPerMillionUsd": 15
-    },
-    "gpt-5.4-mini": {
-      "inputPerMillionUsd": 0.75,
-      "cachedInputPerMillionUsd": 0.075,
-      "outputPerMillionUsd": 4.5
-    },
-    "gpt-5.5": {
-      "inputPerMillionUsd": 5,
-      "cachedInputPerMillionUsd": 0.5,
-      "outputPerMillionUsd": 30
-    }
-  }
-}
-```
+- Windows: `C:\\path\\to\\your-home\\.codex\\sessions`
+- Linux or Remote SSH: `/path/to/your-home/.codex/sessions`
 
-Recommended minimal setup if your Codex session mostly uses `gpt-5.4`:
+### Cost Estimation
+
+Minimal custom pricing example:
 
 ```json
 {
@@ -132,24 +98,9 @@ Recommended minimal setup if your Codex session mostly uses `gpt-5.4`:
 }
 ```
 
-Example with RMB display:
+### Windows Notification Clicks
 
-```json
-{
-  "codexTaskNotify.costEstimation.enabled": true,
-  "codexTaskNotify.costEstimation.outputCurrency": "CNY",
-  "codexTaskNotify.costEstimation.exchangeRate": 7.2,
-  "codexTaskNotify.costEstimation.customModelPricing": {
-    "gpt-5.4": {
-      "inputPerMillionUsd": 2.5,
-      "cachedInputPerMillionUsd": 0.25,
-      "outputPerMillionUsd": 15
-    }
-  }
-}
-```
-
-Windows notification click behavior:
+You can let a Windows desktop notification bring VS Code back to the front:
 
 ```json
 {
@@ -157,59 +108,80 @@ Windows notification click behavior:
 }
 ```
 
-When enabled on local Windows, clicking the desktop notification will try to
-bring VS Code back to the relevant workspace. For Remote SSH / WSL sessions,
-this is a best-effort fallback and may only bring VS Code to the foreground.
+When enabled on local Windows, clicking the desktop notification will try to bring VS Code back to the relevant workspace.
 
-Notes:
+### Optional Notification Channels
 
-- `inputPerMillionUsd`: uncached input token price
-- `cachedInputPerMillionUsd`: cached input token price
-- `outputPerMillionUsd`: output token price
-- model names must match the session data, for example `gpt-5.4`
+#### ntfy
 
-Set `codexTaskNotify.sessionsRoot` explicitly when needed, for example:
-
-- Windows: `C:\\Users\\you\\.codex\\sessions`
-- Linux / Remote SSH: `/home/you/.codex/sessions`
-
-## Quick setup on a new machine
-
-Marketplace path:
-
-```bash
-code --install-extension rmargin.codex-task-notify
+```json
+{
+  "codexTaskNotify.notificationChannels.ntfy.enabled": true,
+  "codexTaskNotify.notificationChannels.ntfy.topicUrl": "https://ntfy.sh/your-topic-name",
+  "codexTaskNotify.notificationChannels.ntfy.priority": 3,
+  "codexTaskNotify.notificationChannels.ntfy.tags": "computer"
+}
 ```
 
-Then run one of these from the VS Code command palette:
+If the topic is private or protected:
 
-- `Codex Task Notify: Show Diagnostics`
-- `Codex Task Notify: Show Recent History`
-- `Codex Task Notify: Install Local CLI`
-- `Codex Task Notify: Install Workspace CLI`
-
-Repo path:
-
-Windows:
-
-```powershell
-git clone <repo-url> && cd codex-task-notify && powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```json
+{
+  "codexTaskNotify.notificationChannels.ntfy.accessToken": "YOUR_NTFY_ACCESS_TOKEN"
+}
 ```
 
-WSL or Linux:
+#### Sound
 
-```bash
-git clone <repo-url> && cd codex-task-notify && bash ./install.sh
+```json
+{
+  "codexTaskNotify.notificationChannels.sound.enabled": true,
+  "codexTaskNotify.notificationChannels.sound.windowsSound": "Notification.Default"
+}
 ```
 
-## Publish later
+#### Generic Webhook
 
-This repo is ready for local side-loading now and for Marketplace packaging.
-The extension publisher is currently set to `rmargin`. If you want to publish
-under a different publisher later, update
-`vscode-codex-task-notify/package.json` and follow [PUBLISHING.md](./PUBLISHING.md).
+```json
+{
+  "codexTaskNotify.notificationChannels.webhook.enabled": true,
+  "codexTaskNotify.notificationChannels.webhook.url": "https://example.com/your-notify-endpoint",
+  "codexTaskNotify.notificationChannels.webhook.headers": {
+    "Authorization": "Bearer YOUR_TOKEN"
+  }
+}
+```
+
+Webhook payload example:
+
+```json
+{
+  "title": "Codex task complete",
+  "message": "Estimated cost | task summary",
+  "level": "info",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "source": "codex-session",
+  "sessionId": "session-id",
+  "turnId": "turn-id",
+  "projectName": "project-name",
+  "cwd": "/path/to/workspace",
+  "sessionFile": "file:///path/to/session.jsonl",
+  "model": "gpt-5.4",
+  "tokenUsage": {},
+  "costEstimate": {}
+}
+```
+
+### Advanced Automation
+
+The project still ships helper scripts, but they are intended for automation and integration rather than everyday end-user setup.
+
+- `Codex Task Notify: Install Local CLI` exports scripts to a per-user directory
+- `Codex Task Notify: Install Workspace CLI` exports scripts into the current workspace
+- This is useful when Codex, a task runner, or a shell script needs a stable entry point
+- Detailed CLI and bridge behavior lives in [notify/README.md](./notify/README.md)
 
 ## Repository
 
 - GitHub: https://github.com/Gtyro/codex-task-notify
-- Design note: [docs/windows-notification-click.md](./docs/windows-notification-click.md)
+- Docs: [docs/README.md](./docs/README.md)

@@ -2,7 +2,7 @@
   "name": "codex-task-notify",
   "displayName": "Codex Task Notify",
   "description": "Local task-completion notifications for Codex across Windows, WSL, and Remote SSH. 为 Codex 提供跨 Windows、WSL 与 Remote SSH 的本地任务完成通知。",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "rmargin",
   "license": "MIT",
   "icon": "icon.png",
@@ -42,6 +42,7 @@
     "onCommand:codexTaskNotify.showDebugSnapshot",
     "onCommand:codexTaskNotify.showRecentHistory",
     "onCommand:codexTaskNotify.showRecentEvents",
+    "onCommand:codexTaskNotify.showWindowsNotificationDiagnostics",
     "onCommand:codexTaskNotify.showRecentCosts",
     "onCommand:codexTaskNotify.testNotification",
     "onCommand:codexTaskNotify.installLocalCli",
@@ -194,14 +195,18 @@
         "command": "codexTaskNotify.showRecentHistory",
         "title": "Codex Task Notify: Show Recent History"
       },
-      {
-        "command": "codexTaskNotify.showRecentEvents",
-        "title": "Codex Task Notify: Show Recent Events"
-      },
-      {
-        "command": "codexTaskNotify.showRecentCosts",
-        "title": "Codex Task Notify: Show Recent Costs"
-      },
+        {
+          "command": "codexTaskNotify.showRecentEvents",
+          "title": "Codex Task Notify: Show Recent Events"
+        },
+        {
+          "command": "codexTaskNotify.showWindowsNotificationDiagnostics",
+          "title": "Codex Task Notify: Show Windows Notification Diagnostics"
+        },
+        {
+          "command": "codexTaskNotify.showRecentCosts",
+          "title": "Codex Task Notify: Show Recent Costs"
+        },
       {
         "command": "codexTaskNotify.installLocalCli",
         "title": "Codex Task Notify: Install Local CLI"

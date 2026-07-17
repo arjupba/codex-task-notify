@@ -16,11 +16,13 @@ const {
   getChronologicalEntries,
   getOutputChannel
 } = require("./diagnosticsFormatter");
+const { readWindowsNotificationDiagnostics } = require("./windowsNotificationDiagnostics");
 
 async function showDiagnostics(context, sessionMonitor, recentNotifications) {
   const diagnostics = sessionMonitor.getDiagnostics();
   const workspaceHistory = getCurrentWorkspaceHistoryDescriptor();
   const historyStore = readGlobalHistoryStore(context);
+  const windowsNotificationDiagnostics = await readWindowsNotificationDiagnostics(context, 20);
   const output = getOutputChannel();
   output.clear();
   output.appendLine("===== Codex Task Notify Diagnostics =====");
@@ -55,6 +57,7 @@ async function showDiagnostics(context, sessionMonitor, recentNotifications) {
   output.appendLine(`missingRootWarningShown: ${diagnostics.missingRootWarningShown}`);
   output.appendLine(`lastError: ${diagnostics.lastError || "(none)"}`);
   appendCostDiagnostics(output, diagnostics.latestCompletion);
+  appendWindowsNotificationDiagnosticsSummary(output, windowsNotificationDiagnostics);
 
   output.appendLine("");
   output.appendLine("Latest completion:");
@@ -83,6 +86,7 @@ async function showDebugSnapshot(context, sessionMonitor, recentNotifications) {
   const diagnostics = sessionMonitor.getDiagnostics();
   const snapshotState = sessionMonitor.getSnapshotState();
   const workspaceHistory = getCurrentWorkspaceHistoryDescriptor();
+  const windowsNotificationDiagnostics = await readWindowsNotificationDiagnostics(context, 50);
   const output = getOutputChannel();
   output.clear();
   output.appendLine("===== Codex Task Notify Debug Snapshot =====");
@@ -97,6 +101,7 @@ async function showDebugSnapshot(context, sessionMonitor, recentNotifications) {
     diagnostics,
     costSettings: getCostSettings(),
     notificationSettings: getNotificationChannelSettings(),
+    windowsNotificationDiagnostics,
     recentCompletions: snapshotState.recentCompletions,
     recentNotifications: JSON.parse(JSON.stringify(recentNotifications)),
     latestCompletion: snapshotState.latestCompletion || null
@@ -143,8 +148,9 @@ async function showRecentHistory(sessionMonitor, recentNotifications) {
   );
 }
 
-async function showRecentEvents(sessionMonitor, recentNotifications) {
+async function showRecentEvents(context, sessionMonitor, recentNotifications) {
   const output = getOutputChannel();
+  const windowsNotificationDiagnostics = await readWindowsNotificationDiagnostics(context, 20);
   output.clear();
   output.appendLine("===== Codex Task Notify Recent Events =====");
 
@@ -152,7 +158,7 @@ async function showRecentEvents(sessionMonitor, recentNotifications) {
   const snapshotState = sessionMonitor.getSnapshotState();
   const events = buildRecentEventList(diagnostics, snapshotState.recentCompletions, recentNotifications);
 
-  if (!events.length) {
+  if (!events.length && !windowsNotificationDiagnostics.entries.length) {
     output.appendLine("(no recent events observed yet)");
     output.show(true);
     await vscode.window.showInformationMessage("Codex Task Notify: no recent events observed yet.");
@@ -167,8 +173,37 @@ async function showRecentEvents(sessionMonitor, recentNotifications) {
     output.appendLine("");
   }
 
+  if (windowsNotificationDiagnostics.entries.length) {
+    output.appendLine("Windows notification helper events:");
+    appendWindowsNotificationDiagnosticsEntries(output, windowsNotificationDiagnostics.entries);
+  }
+
   output.show(true);
-  await vscode.window.showInformationMessage(`Codex Task Notify: showed ${events.length} recent events.`);
+  await vscode.window.showInformationMessage(
+    `Codex Task Notify: showed ${events.length} recent events and ${windowsNotificationDiagnostics.entries.length} helper events.`
+  );
+}
+
+async function showWindowsNotificationDiagnostics(context) {
+  const output = getOutputChannel();
+  const windowsNotificationDiagnostics = await readWindowsNotificationDiagnostics(context, 80);
+  output.clear();
+  output.appendLine("===== Codex Task Notify Windows Notification Diagnostics =====");
+  output.appendLine(`logPath: ${windowsNotificationDiagnostics.logPath || "(unavailable)"}`);
+
+  if (!windowsNotificationDiagnostics.entries.length) {
+    output.appendLine("(no Windows notification helper events recorded yet)");
+    output.show(true);
+    await vscode.window.showInformationMessage("Codex Task Notify: no Windows notification helper events recorded yet.");
+    return;
+  }
+
+  output.appendLine("");
+  appendWindowsNotificationDiagnosticsEntries(output, windowsNotificationDiagnostics.entries);
+  output.show(true);
+  await vscode.window.showInformationMessage(
+    `Codex Task Notify: showed ${windowsNotificationDiagnostics.entries.length} Windows notification helper events.`
+  );
 }
 
 async function showRecentCosts(sessionMonitor) {
@@ -212,10 +247,42 @@ async function showRecentCosts(sessionMonitor) {
   await vscode.window.showInformationMessage(`Codex Task Notify: showed ${costed.length} costed completions.`);
 }
 
+function appendWindowsNotificationDiagnosticsSummary(output, windowsNotificationDiagnostics) {
+  output.appendLine("");
+  output.appendLine("Windows notification diagnostics:");
+  output.appendLine(`  logPath: ${windowsNotificationDiagnostics.logPath || "(unavailable)"}`);
+  output.appendLine(`  recentHelperEventCount: ${windowsNotificationDiagnostics.entries.length}`);
+
+  const latest = windowsNotificationDiagnostics.entries[windowsNotificationDiagnostics.entries.length - 1];
+  if (!latest) {
+    output.appendLine("  latestHelperEvent: (none)");
+    return;
+  }
+
+  output.appendLine(
+    `  latestHelperEvent: ${formatDisplayTimestamp(latest.timestamp, "(unknown)")} | ${latest.source}:${latest.stage}`
+  );
+  if (latest.notificationId) {
+    output.appendLine(`  latestHelperNotificationId: ${latest.notificationId}`);
+  }
+}
+
+function appendWindowsNotificationDiagnosticsEntries(output, entries) {
+  for (const entry of [...entries].reverse()) {
+    output.appendLine(`- ${formatDisplayTimestamp(entry.timestamp, "(unknown time)")} | ${entry.source}:${entry.stage}`);
+    if (entry.notificationId) {
+      output.appendLine(`  notificationId: ${entry.notificationId}`);
+    }
+    output.appendLine(`  data: ${JSON.stringify(entry.details || {})}`);
+    output.appendLine("");
+  }
+}
+
 module.exports = {
   showDebugSnapshot,
   showDiagnostics,
   showRecentCosts,
   showRecentEvents,
-  showRecentHistory
+  showRecentHistory,
+  showWindowsNotificationDiagnostics
 };

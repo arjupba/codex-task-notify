@@ -2,6 +2,7 @@ const vscode = require("vscode");
 const { deliverExternalNotifications } = require("./notificationChannels");
 const { claimNotificationDelivery, getNotificationDedupeDir } = require("./notificationDeduper");
 const { tryShowLocalWindowsNotification } = require("./windowsNotificationPresenter");
+const { appendWindowsNotificationDiagnostic } = require("./windowsNotificationDiagnostics");
 
 async function showNotification(context, payload) {
   const title =
@@ -37,9 +38,28 @@ async function showNotification(context, payload) {
     console.error("[codex-task-notify] Failed to deliver external notifications", error);
   }
 
-  if (await tryShowLocalWindowsNotification(context, { title, message, level, cwd: payload.cwd })) {
+  if (
+    await tryShowLocalWindowsNotification(context, {
+      id: payload.id,
+      title,
+      message,
+      level,
+      cwd: payload.cwd,
+      projectName: payload.projectName
+    })
+  ) {
     return true;
   }
+
+  void appendWindowsNotificationDiagnostic(context, {
+    source: "extension",
+    stage: "desktop-notification-fallback-in-app",
+    notificationId: typeof payload.id === "string" ? payload.id : "",
+    details: {
+      title,
+      level
+    }
+  });
 
   await showInAppNotification(text, level);
   return true;

@@ -28,6 +28,32 @@ Known limits of the current approach:
   local Windows folder paths.
 - It depends on the helper PowerShell process staying alive during the balloon.
 
+## Observed constraints from field testing
+
+Recent real-world testing on July 16, 2026 exposed a few concrete constraints
+that are worth keeping documented:
+
+- In WSL and Remote SSH flows, `workspacePath` is often empty on the Windows
+  helper side. The session payload usually carries a Linux path such as
+  `/home/...`, not a local Windows folder path that can be passed to
+  `code --reuse-window <workspacePath>`.
+- Because `workspacePath` is often unavailable for remote sessions, the current
+  click-through path falls back to matching visible VS Code window titles using
+  a lightweight hint such as the project name.
+- VS Code can expose multiple top-level windows from the same `Code.exe`
+  process. Looking only at `Get-Process Code` plus `MainWindowTitle` is not
+  enough to distinguish those windows reliably. The implementation now
+  enumerates top-level windows instead, but the matching is still title-based.
+- Title-based matching can still be ambiguous when a window is showing
+  `Welcome`, an untitled file, or another editor title that does not include
+  the target workspace hint. In that situation, the helper can only make a
+  best-effort choice.
+
+The future-path discussion around a native Windows activation chain is
+captured separately as an ADR:
+
+- [ADR 0001: Native Windows Notification Activation as a Future Path](./adr/0001-native-windows-notification-activation.md)
+
 ## More canonical future approach
 
 If we later want a more robust Windows-native implementation, the better path
