@@ -417,7 +417,7 @@ class CodexSessionMonitor {
     this.stats.lastTaskCompleteAtIso = completedAtIso;
     this.stats.lastTaskCompleteSessionId = sessionId;
     this.stats.lastTaskCompleteTurnId = turnId;
-    await this.notify({
+    void this.notify({
       id: eventId,
       title,
       message,
